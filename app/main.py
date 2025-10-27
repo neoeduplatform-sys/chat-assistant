@@ -1,0 +1,366 @@
+"""
+API Backend del Chatbot Educativo
+==================================
+
+Esta API proporciona endpoints para interactuar con el chatbot educativo
+que utiliza RAG (Retrieval-Augmented Generation) con Gemini y ChromaDB.
+"""
+
+import os
+import logging
+from typing import Optional
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+from pydantic import BaseModel, Field
+from dotenv import load_dotenv
+from pathlib import Path
+
+import chromadb
+from llama_index.core import VectorStoreIndex, Settings
+from llama_index.vector_stores.chroma import ChromaVectorStore
+from llama_index.llms.google_genai import GoogleGenAI
+from llama_index.embeddings.google_genai import GoogleGenAIEmbedding
+
+# Cargar variables de entorno
+load_dotenv()
+
+# Configurar logging
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO"),
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# Variable global para el motor de consulta
+query_engine = None
+
+
+# ============================================================================
+# MODELOS PYDANTIC
+# ============================================================================
+
+class QueryRequest(BaseModel):
+    """Modelo para las solicitudes de chat."""
+    question: str = Field(
+        ...,
+        min_length=1,
+        max_length=1000,
+        description="La pregunta del usuario sobre el curso"
+    )
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "question": "¿Cuáles son los temas principales del módulo 1?"
+            }
+        }
+
+
+class QueryResponse(BaseModel):
+    """Modelo para las respuestas del chatbot."""
+    answer: str = Field(..., description="La respuesta generada por el chatbot")
+    sources: Optional[list] = Field(
+        default=None,
+        description="Fuentes utilizadas para generar la respuesta"
+    )
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "answer": "Los temas principales del módulo 1 son...",
+                "sources": ["documento1.pdf", "documento2.pdf"]
+            }
+        }
+
+
+class HealthResponse(BaseModel):
+    """Modelo para la respuesta del health check."""
+    status: str
+    message: str
+    model: str
+    collection_count: Optional[int] = None
+
+
+# ============================================================================
+# LIFECYCLE MANAGEMENT
+# ============================================================================
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Gestiona el ciclo de vida de la aplicación."""
+    # Startup
+    logger.info("🚀 Iniciando la aplicación...")
+    await initialize_query_engine()
+
+    yield
+
+    # Shutdown
+    logger.info("👋 Cerrando la aplicación...")
+
+
+# ============================================================================
+# INICIALIZACIÓN
+# ============================================================================
+
+async def initialize_query_engine():
+    """Inicializa el motor de consulta RAG."""
+    global query_engine
+
+    try:
+        # 1. Validar API Key
+        api_key = os.getenv("GOOGLE_API_KEY")
+        if not api_key:
+            logger.error("❌ GOOGLE_API_KEY no está configurada.")
+            logger.error("Consulta SETUP_API_KEY.md para obtener instrucciones.")
+            return
+
+        # 2. Obtener configuración
+        model = os.getenv("GEMINI_MODEL", "models/gemini-1.5-pro-latest")
+        embedding_model = os.getenv("EMBEDDING_MODEL", "models/text-embedding-004")
+        chromadb_host = os.getenv("CHROMADB_HOST", "chromadb")
+        chromadb_port = int(os.getenv("CHROMADB_PORT", "8000"))
+        collection_name = os.getenv("COLLECTION_NAME", "course_content")
+        similarity_top_k = int(os.getenv("SIMILARITY_TOP_K", "3"))
+
+        logger.info("📝 Configuración:")
+        logger.info(f"   - Modelo LLM: {model}")
+        logger.info(f"   - Modelo de Embeddings: {embedding_model}")
+        logger.info(f"   - ChromaDB: {chromadb_host}:{chromadb_port}")
+        logger.info(f"   - Colección: {collection_name}")
+        logger.info(f"   - Top K: {similarity_top_k}")
+
+        # 3. Configurar LlamaIndex
+        Settings.llm = GoogleGenAI(model=model)
+        Settings.embed_model = GoogleGenAIEmbedding(model_name=embedding_model)
+
+        # 4. Conectar a ChromaDB
+        logger.info("🔌 Conectando a ChromaDB...")
+        db = chromadb.HttpClient(host=chromadb_host, port=chromadb_port)
+
+        # Verificar conexión
+        db.heartbeat()
+        logger.info("✅ Conexión a ChromaDB exitosa.")
+
+        # 5. Obtener la colección
+        logger.info(f"📦 Obteniendo colección '{collection_name}'...")
+        chroma_collection = db.get_collection(collection_name)
+
+        # Verificar que la colección tenga datos
+        count = chroma_collection.count()
+        if count == 0:
+            logger.warning("⚠️  La colección está vacía. Ejecuta el script de ingesta:")
+            logger.warning("   docker-compose run --rm fastapi_app python ingest.py")
+            return
+
+        logger.info(f"✅ Colección obtenida. Contiene {count} fragmentos.")
+
+        # 6. Crear el índice vectorial
+        logger.info("🔍 Creando el índice vectorial...")
+        vector_store = ChromaVectorStore(chroma_collection=chroma_collection)
+        index = VectorStoreIndex.from_vector_store(vector_store=vector_store)
+
+        # 7. Crear el motor de consulta
+        query_engine = index.as_query_engine(
+            streaming=False,
+            similarity_top_k=similarity_top_k,
+        )
+
+        logger.info("✅ Motor de consulta inicializado correctamente.")
+
+    except Exception as e:
+        logger.error(f"❌ Error al inicializar el motor de consulta: {e}")
+        logger.error("Detalles del error:", exc_info=True)
+        query_engine = None
+
+
+# ============================================================================
+# APLICACIÓN FASTAPI
+# ============================================================================
+
+app = FastAPI(
+    title="Chatbot Educativo API",
+    description="""
+    API para interactuar con un chatbot educativo que utiliza
+    Retrieval-Augmented Generation (RAG) con Gemini y ChromaDB.
+
+    ## Características
+
+    * 🤖 Respuestas basadas en el contenido del curso
+    * 🔍 Búsqueda semántica en documentos
+    * 🚀 Powered by Google Gemini
+    * 📚 Base de conocimiento personalizable
+
+    ## Uso
+
+    1. Asegúrate de haber ejecutado el script de ingesta
+    2. Envía preguntas a `/api/chat`
+    3. Recibe respuestas fundamentadas en los materiales del curso
+    """,
+    version="1.0.0",
+    lifespan=lifespan,
+)
+
+# Configurar CORS
+cors_origins = os.getenv("CORS_ORIGINS", "*").split(",")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=cors_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Montar archivos estáticos del frontend
+frontend_path = Path(__file__).parent.parent / "frontend"
+if frontend_path.exists():
+    app.mount("/static", StaticFiles(directory=str(frontend_path)), name="static")
+    logger.info(f"✅ Frontend montado en /static desde {frontend_path}")
+else:
+    logger.warning(f"⚠️  No se encontró el directorio frontend en {frontend_path}")
+
+
+# ============================================================================
+# ENDPOINTS
+# ============================================================================
+
+@app.get("/")
+async def root():
+    """
+    Endpoint raíz - Sirve la interfaz web del chatbot.
+
+    Si el frontend está disponible, retorna el index.html.
+    De lo contrario, retorna información de la API.
+    """
+    frontend_index = frontend_path / "index.html"
+
+    if frontend_index.exists():
+        return FileResponse(str(frontend_index))
+    else:
+        return {
+            "message": "API del Chatbot Educativo está en funcionamiento.",
+            "version": "1.0.0",
+            "endpoints": {
+                "chat": "/api/chat",
+                "health": "/health",
+                "docs": "/docs"
+            },
+            "note": "Frontend no disponible. Para probar la API, visita /docs"
+        }
+
+
+@app.get("/health", response_model=HealthResponse)
+async def health_check():
+    """
+    Endpoint de health check.
+
+    Verifica el estado de la aplicación y la conexión con ChromaDB.
+    """
+    if query_engine is None:
+        return HealthResponse(
+            status="unhealthy",
+            message="El motor de consulta no está disponible. Verifica los logs.",
+            model=os.getenv("GEMINI_MODEL", "unknown")
+        )
+
+    try:
+        # Verificar conexión con ChromaDB
+        chromadb_host = os.getenv("CHROMADB_HOST", "chromadb")
+        chromadb_port = int(os.getenv("CHROMADB_PORT", "8000"))
+        collection_name = os.getenv("COLLECTION_NAME", "course_content")
+
+        db = chromadb.HttpClient(host=chromadb_host, port=chromadb_port)
+        db.heartbeat()
+
+        chroma_collection = db.get_collection(collection_name)
+        count = chroma_collection.count()
+
+        return HealthResponse(
+            status="healthy",
+            message="Todos los sistemas operativos.",
+            model=os.getenv("GEMINI_MODEL", "models/gemini-1.5-pro-latest"),
+            collection_count=count
+        )
+
+    except Exception as e:
+        logger.error(f"Error en health check: {e}")
+        return HealthResponse(
+            status="degraded",
+            message=f"Error al verificar el estado: {str(e)}",
+            model=os.getenv("GEMINI_MODEL", "unknown")
+        )
+
+
+@app.post("/api/chat", response_model=QueryResponse)
+async def chat_endpoint(request: QueryRequest):
+    """
+    Endpoint principal del chatbot.
+
+    Recibe una pregunta del usuario y devuelve una respuesta
+    generada usando RAG (Retrieval-Augmented Generation).
+
+    **Parámetros:**
+    - `question`: La pregunta del usuario sobre el contenido del curso
+
+    **Retorna:**
+    - `answer`: La respuesta generada por el chatbot
+    - `sources`: Lista de fuentes utilizadas (opcional)
+    """
+    if query_engine is None:
+        raise HTTPException(
+            status_code=503,
+            detail="El motor de consulta no está disponible. Verifica los logs del servidor."
+        )
+
+    logger.info(f"📩 Pregunta recibida: {request.question}")
+
+    try:
+        # Realizar la consulta
+        response = query_engine.query(request.question)
+
+        # Extraer la respuesta
+        answer = str(response)
+
+        # Extraer fuentes si están disponibles
+        sources = []
+        if hasattr(response, 'source_nodes'):
+            for node in response.source_nodes:
+                if hasattr(node, 'node') and hasattr(node.node, 'metadata'):
+                    metadata = node.node.metadata
+                    if 'file_name' in metadata:
+                        sources.append(metadata['file_name'])
+
+        # Eliminar duplicados de fuentes
+        sources = list(set(sources)) if sources else None
+
+        logger.info(f"✅ Respuesta generada exitosamente.")
+        if sources:
+            logger.info(f"📚 Fuentes utilizadas: {sources}")
+
+        return QueryResponse(answer=answer, sources=sources)
+
+    except Exception as e:
+        logger.error(f"❌ Error al procesar la consulta: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error interno al procesar la pregunta: {str(e)}"
+        )
+
+
+# ============================================================================
+# DESARROLLO Y TESTING
+# ============================================================================
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=8080,
+        reload=True,
+        log_level="info"
+    )

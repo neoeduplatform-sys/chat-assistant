@@ -1,0 +1,35 @@
+# ========================================
+# DEPENDENCIAS DEL CHATBOT EDUCATIVO
+# ========================================
+
+# Framework de API
+fastapi==0.115.0
+uvicorn[standard]==0.32.0
+pydantic==2.9.2
+pydantic-settings==2.6.0
+
+# Framework de orquestación RAG
+llama-index>=0.12.36,<0.13.0
+llama-index-core>=0.12.36,<0.13.0
+
+# Integraciones con Google Gemini
+llama-index-llms-google-genai==0.2.0
+llama-index-embeddings-google-genai==0.2.0
+
+# Base de datos vectorial ChromaDB
+chromadb==0.5.23
+llama-index-vector-stores-chroma==0.4.1
+
+# Procesamiento de documentos
+pypdf==5.1.0
+python-multipart==0.0.18
+
+# Variables de entorno
+python-dotenv==1.0.1
+
+# Utilidades
+requests==2.32.3
+aiofiles==24.1.0
+
+# Logging y monitoreo
+python-json-logger==3.2.1
