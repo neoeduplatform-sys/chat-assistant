@@ -44,7 +44,7 @@ ENV/
 Thumbs.db
 
 # Data (opcional: descomenta si no quieres subir los documentos)
-# data/*
+data/*
 # !data/.gitkeep
 
 # Jupyter Notebooks
