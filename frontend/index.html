@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Demo del Chatbot Educativo - Asistente inteligente para cursos">
+    <title>Chatbot Educativo - Demo</title>
+
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            line-height: 1.6;
+            color: #1F2937;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 40px 20px;
+        }
+
+        header {
+            text-align: center;
+            color: white;
+            margin-bottom: 60px;
+        }
+
+        header h1 {
+            font-size: 3rem;
+            font-weight: 700;
+            margin-bottom: 16px;
+            text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.2);
+        }
+
+        header p {
+            font-size: 1.25rem;
+            opacity: 0.95;
+        }
+
+        .content-card {
+            background: white;
+            border-radius: 16px;
+            padding: 40px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+            margin-bottom: 30px;
+        }
+
+        .content-card h2 {
+            color: #4F46E5;
+            margin-bottom: 20px;
+            font-size: 2rem;
+        }
+
+        .content-card h3 {
+            color: #374151;
+            margin: 30px 0 15px 0;
+            font-size: 1.5rem;
+        }
+
+        .content-card p {
+            margin-bottom: 16px;
+            color: #4B5563;
+            font-size: 1.1rem;
+        }
+
+        .feature-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 24px;
+            margin: 40px 0;
+        }
+
+        .feature-card {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            border-radius: 12px;
+            text-align: center;
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+        }
+
+        .feature-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 12px 24px rgba(0, 0, 0, 0.15);
+        }
+
+        .feature-card h4 {
+            font-size: 1.25rem;
+            margin-bottom: 12px;
+        }
+
+        .feature-card p {
+            color: rgba(255, 255, 255, 0.9);
+            font-size: 1rem;
+        }
+
+        .cta-box {
+            background: linear-gradient(135deg, #4F46E5 0%, #6366F1 100%);
+            color: white;
+            padding: 40px;
+            border-radius: 16px;
+            text-align: center;
+            margin-top: 40px;
+        }
+
+        .cta-box h3 {
+            color: white;
+            font-size: 1.75rem;
+            margin-bottom: 16px;
+        }
+
+        .cta-box p {
+            color: rgba(255, 255, 255, 0.95);
+            font-size: 1.1rem;
+            margin-bottom: 0;
+        }
+
+        .highlight {
+            background: rgba(79, 70, 229, 0.1);
+            padding: 2px 8px;
+            border-radius: 4px;
+            color: #4F46E5;
+            font-weight: 600;
+        }
+
+        code {
+            background: #F3F4F6;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-family: 'Courier New', monospace;
+            font-size: 0.9em;
+            color: #DC2626;
+        }
+
+        footer {
+            text-align: center;
+            color: white;
+            margin-top: 60px;
+            padding: 20px;
+        }
+
+        footer p {
+            opacity: 0.9;
+        }
+
+        @media (max-width: 768px) {
+            header h1 {
+                font-size: 2rem;
+            }
+
+            .content-card {
+                padding: 24px;
+            }
+        }
+    </style>
+
+    <!-- Configuración del widget -->
+    <script>
+        // Configuración personalizada del chatbot (opcional)
+        window.CHATBOT_API_URL = 'http://localhost:8080/api/chat';
+        window.CHATBOT_TITLE = 'Asistente del Curso';
+        window.CHATBOT_SUBTITLE = 'Pregúntame sobre el contenido';
+        window.CHATBOT_PLACEHOLDER = 'Escribe tu pregunta aquí...';
+        window.CHATBOT_PRIMARY_COLOR = '#4F46E5';
+        window.CHATBOT_ACCENT_COLOR = '#6366F1';
+    </script>
+
+    <!-- Widget del chatbot -->
+    <script src="/static/chat-widget.js"></script>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Chatbot Educativo</h1>
+            <p>Tu asistente inteligente para el aprendizaje</p>
+        </header>
+
+        <div class="content-card">
+            <h2>¡Bienvenido al Curso!</h2>
+            <p>
+                Este es un ejemplo de cómo integrar el chatbot educativo en tu sitio web.
+                El chatbot está <span class="highlight">siempre disponible</span> en la esquina
+                inferior derecha de la pantalla para responder tus preguntas sobre el contenido del curso.
+            </p>
+
+            <h3>¿Cómo funciona?</h3>
+            <p>
+                El chatbot utiliza <strong>Inteligencia Artificial</strong> avanzada para responder
+                tus preguntas basándose en los materiales del curso. Utiliza tecnología RAG
+                (Retrieval-Augmented Generation) que garantiza respuestas precisas y fundamentadas.
+            </p>
+
+            <div class="feature-grid">
+                <div class="feature-card">
+                    <h4>🤖 IA Avanzada</h4>
+                    <p>Powered by Google Gemini</p>
+                </div>
+                <div class="feature-card">
+                    <h4>📚 Respuestas Precisas</h4>
+                    <p>Basadas en el contenido del curso</p>
+                </div>
+                <div class="feature-card">
+                    <h4>⚡ Respuestas Rápidas</h4>
+                    <p>Obtén ayuda instantánea</p>
+                </div>
+                <div class="feature-card">
+                    <h4>🔍 Búsqueda Semántica</h4>
+                    <p>Encuentra información relevante</p>
+                </div>
+            </div>
+
+            <h3>Ejemplos de preguntas</h3>
+            <p>
+                Puedes hacerle preguntas como:
+            </p>
+            <ul style="margin-left: 40px; margin-bottom: 20px; color: #4B5563;">
+                <li>"¿Cuáles son los temas principales del módulo 1?"</li>
+                <li>"Explícame el concepto de RAG"</li>
+                <li>"¿Qué es ChromaDB y para qué se utiliza?"</li>
+                <li>"Resúmeme los puntos clave de la arquitectura"</li>
+                <li>"¿Cómo funciona la búsqueda semántica?"</li>
+            </ul>
+
+            <h3>Características del Widget</h3>
+            <p>
+                El widget de chat es:
+            </p>
+            <ul style="margin-left: 40px; margin-bottom: 20px; color: #4B5563;">
+                <li><strong>Ligero:</strong> Sin dependencias externas</li>
+                <li><strong>Responsive:</strong> Se adapta a cualquier dispositivo</li>
+                <li><strong>Personalizable:</strong> Colores, textos y posición configurables</li>
+                <li><strong>Fácil de integrar:</strong> Solo necesitas incluir un script</li>
+            </ul>
+        </div>
+
+        <div class="cta-box">
+            <h3>Prueba el Chatbot Ahora</h3>
+            <p>
+                Haz clic en el ícono de chat en la esquina inferior derecha
+                y empieza a hacer preguntas sobre el curso. ¡Es fácil y rápido!
+            </p>
+        </div>
+
+        <div class="content-card">
+            <h2>Integración en tu Sitio</h2>
+            <p>
+                Integrar el chatbot en tu sitio web es muy sencillo. Solo necesitas agregar
+                estas líneas en tu HTML:
+            </p>
+
+            <pre style="background: #F3F4F6; padding: 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0;">
+<code>&lt;!-- Configuración (opcional) --&gt;
+&lt;script&gt;
+  window.CHATBOT_API_URL = 'http://localhost:8080/api/chat';
+  window.CHATBOT_TITLE = 'Asistente del Curso';
+&lt;/script&gt;
+
+&lt;!-- Widget del chatbot --&gt;
+&lt;script src="chat-widget.js"&gt;&lt;/script&gt;</code>
+            </pre>
+
+            <p>
+                ¡Y eso es todo! El chatbot aparecerá automáticamente en tu página.
+            </p>
+        </div>
+
+        <footer>
+            <p>Chatbot Educativo - Powered by Google Gemini & ChromaDB</p>
+            <p>Demo creada para fines educativos</p>
+        </footer>
+    </div>
+</body>
+</html>
