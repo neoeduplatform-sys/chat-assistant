@@ -1,0 +1,1 @@
+- docker cli is docker insted of docker-compose

@@ -14,6 +14,10 @@ docker compose run --rm fastapi_app python ingest.py
 
 
 Restart app:
+```
+docker compose build fastapi_app
+docker up -d
+```
 
 Ejecuta estos comandos:
 

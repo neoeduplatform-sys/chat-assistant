@@ -16,9 +16,8 @@ llama-index-core>=0.12.36,<0.13.0
 llama-index-llms-google-genai==0.2.0
 llama-index-embeddings-google-genai==0.2.0
 
-# Base de datos vectorial ChromaDB
-chromadb==0.5.23
-llama-index-vector-stores-chroma==0.4.1
+# HTTP client para conectarse a Supabase API REST
+# httpx ya está incluido como dependencia de llama-index-core y google-genai
 
 # Procesamiento de documentos
 pypdf==5.1.0

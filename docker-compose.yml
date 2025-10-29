@@ -1,19 +1,4 @@
 services:
-  # Base de datos vectorial ChromaDB
-  chromadb:
-    image: chromadb/chroma:0.5.23
-    container_name: chromadb_service
-    ports:
-      - "${CHROMADB_PORT:-8000}:8000"
-    volumes:
-      - chroma_data:/chroma/chroma
-    environment:
-      - IS_PERSISTENT=TRUE
-      - ANONYMIZED_TELEMETRY=FALSE
-    restart: unless-stopped
-    networks:
-      - chatbot_network
-
   # API Backend con FastAPI
   fastapi_app:
     build:
@@ -27,22 +12,13 @@ services:
       - ./data:/app/data
       - ./frontend:/app/frontend
       - ./ingest.py:/app/ingest.py
-    depends_on:
-      chromadb:
-        condition: service_started
     env_file:
       - .env
     environment:
-      - CHROMADB_HOST=chromadb
-      - CHROMADB_PORT=8000
       - PYTHONUNBUFFERED=1
     restart: unless-stopped
     networks:
       - chatbot_network
-
-volumes:
-  chroma_data:
-    driver: local
 
 networks:
   chatbot_network:

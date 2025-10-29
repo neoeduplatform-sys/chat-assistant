@@ -3,7 +3,7 @@ Script de Ingesta de Datos para el Chatbot Educativo
 =====================================================
 
 Este script carga documentos desde el directorio ./data, los procesa
-y los almacena en ChromaDB para su uso en el sistema RAG.
+y los almacena en Supabase (PostgreSQL + pgvector) para su uso en el sistema RAG.
 
 Uso:
     docker-compose run --rm fastapi_app python ingest.py
@@ -18,17 +18,20 @@ import logging
 from pathlib import Path
 from dotenv import load_dotenv
 
-import chromadb
 from llama_index.core import (
     SimpleDirectoryReader,
     VectorStoreIndex,
     StorageContext,
     Settings,
 )
-from llama_index.vector_stores.chroma import ChromaVectorStore
 from llama_index.llms.google_genai import GoogleGenAI
 from llama_index.embeddings.google_genai import GoogleGenAIEmbedding
 from llama_index.core.node_parser import SentenceSplitter
+
+# Importar nuestro custom vector store
+import sys
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from app.supabase_vector_store import SupabaseVectorStore
 
 # Cargar variables de entorno
 load_dotenv()
@@ -83,7 +86,7 @@ def configure_llama_index():
     """Configura los componentes globales de LlamaIndex."""
     # Obtener configuración de variables de entorno con valores por defecto
     model = os.getenv("GEMINI_MODEL", "models/gemini-1.5-pro-latest")
-    embedding_model = os.getenv("EMBEDDING_MODEL", "models/text-embedding-004")
+    embedding_model = os.getenv("EMBEDDING_MODEL", "models/gemini-embedding-001")
     chunk_size = int(os.getenv("CHUNK_SIZE", "512"))
     chunk_overlap = int(os.getenv("CHUNK_OVERLAP", "20"))
 
@@ -128,52 +131,57 @@ def load_documents():
         sys.exit(1)
 
 
-def connect_to_chromadb():
-    """Establece conexión con ChromaDB y obtiene/crea la colección."""
-    chromadb_host = os.getenv("CHROMADB_HOST", "chromadb")
-    chromadb_port = int(os.getenv("CHROMADB_PORT", "8000"))
-    collection_name = os.getenv("COLLECTION_NAME", "course_content")
+def connect_to_supabase():
+    """Establece conexión con Supabase usando API REST."""
+    supabase_url = os.getenv("SUPABASE_URL")
+    supabase_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+    table_name = os.getenv("SUPABASE_TABLE_NAME", "documents")
+    rpc_function = os.getenv("SUPABASE_RPC_FUNCTION", "match_ec1121_gemi_mantenimiento_mecanico_automotriz")
+    embed_dim = int(os.getenv("EMBEDDING_DIMENSIONS", "3072"))
+    match_threshold = float(os.getenv("MATCH_THRESHOLD", "0.5"))
 
-    logger.info(f"🔌 Conectando a ChromaDB en {chromadb_host}:{chromadb_port}...")
+    if not supabase_url or not supabase_key:
+        logger.error("❌ SUPABASE_URL o SUPABASE_SERVICE_ROLE_KEY no están configuradas.")
+        logger.error("Por favor, configura estas variables en .env")
+        sys.exit(1)
+
+    logger.info(f"🔌 Conectando a Supabase vía API REST...")
+    logger.info(f"   - URL: {supabase_url}")
+    logger.info(f"   - Tabla: {table_name}")
+    logger.info(f"   - RPC Function: {rpc_function}")
+    logger.info(f"   - Dimensiones de embedding: {embed_dim}")
+    logger.info(f"   - Match Threshold: {match_threshold}")
 
     try:
-        # Conectar a ChromaDB
-        db = chromadb.HttpClient(host=chromadb_host, port=chromadb_port)
+        # Crear vector store usando API REST
+        vector_store = SupabaseVectorStore(
+            supabase_url=supabase_url,
+            supabase_key=supabase_key,
+            table_name=table_name,
+            rpc_function_name=rpc_function,
+            embed_dim=embed_dim,
+            match_threshold=match_threshold,
+        )
 
-        # Verificar conexión
-        db.heartbeat()
-        logger.info("✅ Conexión a ChromaDB exitosa.")
-
-        # Obtener o crear colección
-        logger.info(f"📦 Obteniendo/creando colección '{collection_name}'...")
-
-        # Primero, intentar eliminar la colección si existe (para reiniciar)
-        try:
-            db.delete_collection(name=collection_name)
-            logger.info(f"🗑️  Colección existente '{collection_name}' eliminada.")
-        except:
-            pass
-
-        chroma_collection = db.get_or_create_collection(collection_name)
-        logger.info(f"✅ Colección '{collection_name}' lista.")
-
-        return chroma_collection
+        logger.info("✅ Conexión a Supabase exitosa.")
+        return vector_store
 
     except Exception as e:
-        logger.error(f"❌ Error al conectar con ChromaDB: {e}")
-        logger.error("Asegúrate de que ChromaDB está en ejecución:")
-        logger.error("   docker-compose up -d chromadb")
+        logger.error(f"❌ Error al conectar con Supabase: {e}")
+        logger.error("Verifica que:")
+        logger.error("   1. SUPABASE_URL y SUPABASE_SERVICE_ROLE_KEY estén configuradas")
+        logger.error("   2. La tabla exista con la estructura correcta")
+        logger.error("   3. La función RPC esté creada en Supabase")
         sys.exit(1)
 
 
-def create_vector_index(documents, chroma_collection):
+def create_vector_index(documents, vector_store):
     """Crea el índice vectorial a partir de los documentos."""
     logger.info("🚀 Creando índice vectorial...")
     logger.info("⏳ Este proceso puede tardar varios minutos dependiendo del tamaño de los documentos...")
 
     try:
-        # Crear el vector store
-        vector_store = ChromaVectorStore(chroma_collection=chroma_collection)
+        # Crear el storage context
         storage_context = StorageContext.from_defaults(vector_store=vector_store)
 
         # Crear el índice
@@ -183,12 +191,7 @@ def create_vector_index(documents, chroma_collection):
             show_progress=True
         )
 
-        logger.info("✅ Índice vectorial creado y almacenado en ChromaDB exitosamente.")
-
-        # Mostrar estadísticas
-        collection_count = chroma_collection.count()
-        logger.info(f"📊 Estadísticas:")
-        logger.info(f"   - Total de fragmentos (chunks) almacenados: {collection_count}")
+        logger.info("✅ Índice vectorial creado y almacenado en Supabase exitosamente.")
 
         return index
 
@@ -215,11 +218,11 @@ def main():
     # 4. Cargar documentos
     documents = load_documents()
 
-    # 5. Conectar a ChromaDB
-    chroma_collection = connect_to_chromadb()
+    # 5. Conectar a Supabase
+    vector_store = connect_to_supabase()
 
     # 6. Crear índice vectorial
-    create_vector_index(documents, chroma_collection)
+    create_vector_index(documents, vector_store)
 
     logger.info("=" * 70)
     logger.info("  ✅ PROCESO DE INGESTA COMPLETADO EXITOSAMENTE")

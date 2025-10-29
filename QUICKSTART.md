@@ -79,13 +79,13 @@ cp ~/Descargas/curso_modulo_2.pdf data/
 
 ```bash
 # Iniciar la base de datos vectorial
-docker-compose up -d chromadb
+docker up -d chromadb
 
 # Esperar a que esté lista (importante)
 sleep 10
 
 # Verificar que está corriendo
-docker-compose ps
+docker ps
 ```
 
 Deberías ver:
@@ -99,7 +99,7 @@ chromadb_service    chromadb/chroma    Up
 
 ```bash
 # Ejecutar el script de ingesta
-docker-compose run --rm fastapi_app python ingest.py
+docker run --rm fastapi_app python ingest.py
 ```
 
 **⏳ Esto puede tardar varios minutos** dependiendo del tamaño de tus documentos.
@@ -117,10 +117,10 @@ Verás algo como:
 
 ```bash
 # Iniciar el servidor FastAPI
-docker-compose up -d
+docker up -d
 
 # Ver logs (opcional)
-docker-compose logs -f fastapi_app
+dockerlogs -f fastapi_app
 ```
 
 La API estará disponible en: http://localhost:8080
@@ -184,7 +184,7 @@ GEMINI_MODEL="models/gemini-2.5-flash"
 Reinicia:
 
 ```bash
-docker-compose restart fastapi_app
+dockerrestart fastapi_app
 ```
 
 ### Personalizar el Widget de Chat
@@ -202,19 +202,19 @@ Edita `frontend/index.html`, busca la sección de configuración:
 
 ```bash
 # Ver logs en tiempo real
-docker-compose logs -f fastapi_app
+dockerlogs -f fastapi_app
 
 # Reiniciar servicios
-docker-compose restart
+docker restart
 
 # Detener todo
-docker-compose down
+docker down
 
 # Detener y eliminar datos (¡cuidado!)
-docker-compose down -v
+docker down -v
 
 # Ver estado de los servicios
-docker-compose ps
+docker ps
 
 # Ejecutar pruebas
 python tests/test_api.py
@@ -236,18 +236,18 @@ nano .env
 
 ```bash
 # Asegúrate de que ChromaDB está ejecutándose
-docker-compose up -d chromadb
+docker up -d chromadb
 sleep 10
 
 # Verifica que está arriba
-docker-compose ps
+docker ps
 ```
 
 ### "Collection is empty"
 
 ```bash
 # Ejecuta el script de ingesta
-docker-compose run --rm fastapi_app python ingest.py
+docker run --rm fastapi_app python ingest.py
 ```
 
 ### "Port 8080 already in use"
@@ -261,21 +261,21 @@ API_PORT=8081
 Y reinicia:
 
 ```bash
-docker-compose down
-docker-compose up -d
+docker down
+docker up -d
 ```
 
 ### La API no responde
 
 ```bash
 # Ver logs para diagnóstico
-docker-compose logs fastapi_app
+docker logs fastapi_app
 
 # Verificar que el contenedor está corriendo
-docker-compose ps
+docker ps
 
 # Reiniciar el servicio
-docker-compose restart fastapi_app
+docker restart fastapi_app
 ```
 
 ## 📚 Siguientes Pasos

@@ -3,7 +3,7 @@ API Backend del Chatbot Educativo
 ==================================
 
 Esta API proporciona endpoints para interactuar con el chatbot educativo
-que utiliza RAG (Retrieval-Augmented Generation) con Gemini y ChromaDB.
+que utiliza RAG (Retrieval-Augmented Generation) con Gemini y Supabase (pgvector).
 """
 
 import os
@@ -19,11 +19,11 @@ from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 from pathlib import Path
 
-import chromadb
 from llama_index.core import VectorStoreIndex, Settings
-from llama_index.vector_stores.chroma import ChromaVectorStore
 from llama_index.llms.google_genai import GoogleGenAI
 from llama_index.embeddings.google_genai import GoogleGenAIEmbedding
+
+from app.supabase_vector_store import SupabaseVectorStore
 
 # Cargar variables de entorno
 load_dotenv()
@@ -120,50 +120,53 @@ async def initialize_query_engine():
 
         # 2. Obtener configuración
         model = os.getenv("GEMINI_MODEL", "models/gemini-1.5-pro-latest")
-        embedding_model = os.getenv("EMBEDDING_MODEL", "models/text-embedding-004")
-        chromadb_host = os.getenv("CHROMADB_HOST", "chromadb")
-        chromadb_port = int(os.getenv("CHROMADB_PORT", "8000"))
-        collection_name = os.getenv("COLLECTION_NAME", "course_content")
+        embedding_model = os.getenv("EMBEDDING_MODEL", "models/gemini-embedding-001")
+        supabase_url = os.getenv("SUPABASE_URL")
+        supabase_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+        table_name = os.getenv("SUPABASE_TABLE_NAME", "documents")
+        rpc_function = os.getenv("SUPABASE_RPC_FUNCTION", "match_ec1121_gemi_mantenimiento_mecanico_automotriz")
+        embed_dim = int(os.getenv("EMBEDDING_DIMENSIONS", "3072"))
+        match_threshold = float(os.getenv("MATCH_THRESHOLD", "0.5"))
         similarity_top_k = int(os.getenv("SIMILARITY_TOP_K", "3"))
+
+        if not supabase_url or not supabase_key:
+            logger.error("❌ SUPABASE_URL o SUPABASE_SERVICE_ROLE_KEY no están configuradas.")
+            logger.error("Por favor, configura estas variables en .env")
+            return
 
         logger.info("📝 Configuración:")
         logger.info(f"   - Modelo LLM: {model}")
         logger.info(f"   - Modelo de Embeddings: {embedding_model}")
-        logger.info(f"   - ChromaDB: {chromadb_host}:{chromadb_port}")
-        logger.info(f"   - Colección: {collection_name}")
+        logger.info(f"   - Supabase URL: {supabase_url}")
+        logger.info(f"   - Tabla: {table_name}")
+        logger.info(f"   - RPC Function: {rpc_function}")
+        logger.info(f"   - Dimensiones de embedding: {embed_dim}")
+        logger.info(f"   - Match Threshold: {match_threshold}")
         logger.info(f"   - Top K: {similarity_top_k}")
 
         # 3. Configurar LlamaIndex
         Settings.llm = GoogleGenAI(model=model)
         Settings.embed_model = GoogleGenAIEmbedding(model_name=embedding_model)
 
-        # 4. Conectar a ChromaDB
-        logger.info("🔌 Conectando a ChromaDB...")
-        db = chromadb.HttpClient(host=chromadb_host, port=chromadb_port)
+        # 4. Conectar a Supabase usando API REST
+        logger.info("🔌 Conectando a Supabase vía API REST...")
 
-        # Verificar conexión
-        db.heartbeat()
-        logger.info("✅ Conexión a ChromaDB exitosa.")
+        vector_store = SupabaseVectorStore(
+            supabase_url=supabase_url,
+            supabase_key=supabase_key,
+            table_name=table_name,
+            rpc_function_name=rpc_function,
+            embed_dim=embed_dim,
+            match_threshold=match_threshold,
+        )
 
-        # 5. Obtener la colección
-        logger.info(f"📦 Obteniendo colección '{collection_name}'...")
-        chroma_collection = db.get_collection(collection_name)
+        logger.info("✅ Conexión a Supabase exitosa.")
 
-        # Verificar que la colección tenga datos
-        count = chroma_collection.count()
-        if count == 0:
-            logger.warning("⚠️  La colección está vacía. Ejecuta el script de ingesta:")
-            logger.warning("   docker-compose run --rm fastapi_app python ingest.py")
-            return
-
-        logger.info(f"✅ Colección obtenida. Contiene {count} fragmentos.")
-
-        # 6. Crear el índice vectorial
+        # 5. Crear el índice vectorial
         logger.info("🔍 Creando el índice vectorial...")
-        vector_store = ChromaVectorStore(chroma_collection=chroma_collection)
         index = VectorStoreIndex.from_vector_store(vector_store=vector_store)
 
-        # 7. Crear el motor de consulta
+        # 6. Crear el motor de consulta
         query_engine = index.as_query_engine(
             streaming=False,
             similarity_top_k=similarity_top_k,
@@ -185,18 +188,18 @@ app = FastAPI(
     title="Chatbot Educativo API",
     description="""
     API para interactuar con un chatbot educativo que utiliza
-    Retrieval-Augmented Generation (RAG) con Gemini y ChromaDB.
+    Retrieval-Augmented Generation (RAG) con Gemini y Supabase (pgvector).
 
     ## Características
 
     * 🤖 Respuestas basadas en el contenido del curso
-    * 🔍 Búsqueda semántica en documentos
+    * 🔍 Búsqueda semántica en documentos con pgvector
     * 🚀 Powered by Google Gemini
-    * 📚 Base de conocimiento personalizable
+    * 📚 Base de conocimiento en Supabase
 
     ## Uso
 
-    1. Asegúrate de haber ejecutado el script de ingesta
+    1. Configura la conexión a Supabase en .env
     2. Envía preguntas a `/api/chat`
     3. Recibe respuestas fundamentadas en los materiales del curso
     """,
@@ -257,7 +260,7 @@ async def health_check():
     """
     Endpoint de health check.
 
-    Verifica el estado de la aplicación y la conexión con ChromaDB.
+    Verifica el estado de la aplicación y la conexión con Supabase.
     """
     if query_engine is None:
         return HealthResponse(
@@ -267,22 +270,11 @@ async def health_check():
         )
 
     try:
-        # Verificar conexión con ChromaDB
-        chromadb_host = os.getenv("CHROMADB_HOST", "chromadb")
-        chromadb_port = int(os.getenv("CHROMADB_PORT", "8000"))
-        collection_name = os.getenv("COLLECTION_NAME", "course_content")
-
-        db = chromadb.HttpClient(host=chromadb_host, port=chromadb_port)
-        db.heartbeat()
-
-        chroma_collection = db.get_collection(collection_name)
-        count = chroma_collection.count()
-
         return HealthResponse(
             status="healthy",
-            message="Todos los sistemas operativos.",
+            message="Todos los sistemas operativos. Conectado a Supabase.",
             model=os.getenv("GEMINI_MODEL", "models/gemini-1.5-pro-latest"),
-            collection_count=count
+            collection_count=None
         )
 
     except Exception as e:
