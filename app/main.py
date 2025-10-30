@@ -166,10 +166,29 @@ async def initialize_query_engine():
         logger.info("🔍 Creando el índice vectorial...")
         index = VectorStoreIndex.from_vector_store(vector_store=vector_store)
 
-        # 6. Crear el motor de consulta
+        # 6. Crear el motor de consulta con instrucciones en español
+        from llama_index.core.prompts import PromptTemplate
+
+        # Template de sistema en español
+        qa_prompt_template = PromptTemplate(
+            "Eres un asistente educativo experto en mantenimiento mecánico automotriz. "
+            "Tu objetivo es ayudar a estudiantes a aprender sobre este tema.\n\n"
+            "IMPORTANTE: Siempre responde en español, sin importar el idioma de la pregunta.\n\n"
+            "Contexto de referencia:\n"
+            "{context_str}\n\n"
+            "Pregunta: {query_str}\n\n"
+            "Instrucciones:\n"
+            "1. Responde ÚNICAMENTE en español\n"
+            "2. Usa el contexto proporcionado para dar respuestas precisas\n"
+            "3. Si no encuentras la respuesta en el contexto, indícalo claramente\n"
+            "4. Sé claro, educativo y profesional\n\n"
+            "Respuesta en español:"
+        )
+
         query_engine = index.as_query_engine(
             streaming=False,
             similarity_top_k=similarity_top_k,
+            text_qa_template=qa_prompt_template,
         )
 
         logger.info("✅ Motor de consulta inicializado correctamente.")
