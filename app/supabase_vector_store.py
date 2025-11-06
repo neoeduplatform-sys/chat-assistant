@@ -184,6 +184,56 @@ class SupabaseVectorStore(BasePydanticVectorStore):
             logger.error(f"Error al eliminar documento {ref_doc_id}: {e}")
             raise
 
+    def delete_by_metadata(self, filter_key: str, filter_value: str) -> int:
+        """
+        Elimina todos los documentos que coincidan con un filtro de metadata.
+
+        Esta función es útil para el patrón "upsert": eliminar todos los chunks
+        antiguos de un documento antes de insertar la nueva versión.
+
+        Args:
+            filter_key: Clave en el campo metadata (ej: "unique_content_id")
+            filter_value: Valor a buscar en esa clave
+
+        Returns:
+            Número de documentos eliminados
+
+        Example:
+            # Eliminar todos los chunks del documento con unique_content_id="doc123"
+            deleted_count = vector_store.delete_by_metadata("unique_content_id", "doc123")
+        """
+        # Usar PostgREST syntax para query en JSONB
+        # metadata->>'key' = 'value'
+        # URL encoding: metadata->>key=eq.value
+        url = f"{self.supabase_url}/rest/v1/{self.table_name}?metadata->{filter_key}=eq.{filter_value}"
+
+        try:
+            # Agregar header para obtener el número de filas afectadas
+            delete_headers = {
+                **self._headers,
+                "Prefer": "return=representation"
+            }
+
+            response = self._client.delete(url, headers=delete_headers)
+            response.raise_for_status()
+
+            # Contar cuántos documentos fueron eliminados
+            deleted_data = response.json()
+            deleted_count = len(deleted_data) if deleted_data else 0
+
+            logger.info(f"✅ {deleted_count} documento(s) eliminado(s) con {filter_key}={filter_value}")
+            return deleted_count
+
+        except httpx.HTTPStatusError as e:
+            logger.error(
+                f"Error HTTP al eliminar documentos con {filter_key}={filter_value}: "
+                f"{e.response.status_code} - {e.response.text}"
+            )
+            raise
+        except Exception as e:
+            logger.error(f"Error al eliminar documentos con {filter_key}={filter_value}: {e}")
+            raise
+
     def query(self, query: VectorStoreQuery, **kwargs: Any) -> VectorStoreQueryResult:
         """
         Realiza una búsqueda vectorial usando la función RPC de Supabase.

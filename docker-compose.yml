@@ -12,11 +12,33 @@ services:
       - ./data:/app/data
       - ./frontend:/app/frontend
       - ./ingest.py:/app/ingest.py
+      - ./worker.py:/app/worker.py
     env_file:
       - .env
     environment:
       - PYTHONUNBUFFERED=1
     restart: unless-stopped
+    networks:
+      - chatbot_network
+
+  # Ingestion Worker - Background Content Processor
+  ingestion_worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ingestion_worker_service
+    command: python worker.py
+    volumes:
+      - ./app:/app/app
+      - ./worker.py:/app/worker.py
+      - ./data:/app/data
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped
+    depends_on:
+      - fastapi_app
     networks:
       - chatbot_network
 

@@ -11,13 +11,14 @@ import logging
 from typing import Optional
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 from pathlib import Path
+import httpx
 
 from llama_index.core import VectorStoreIndex, Settings
 from llama_index.llms.google_genai import GoogleGenAI
@@ -83,6 +84,52 @@ class HealthResponse(BaseModel):
     message: str
     model: str
     collection_count: Optional[int] = None
+
+
+class ContentIngestPayload(BaseModel):
+    """Modelo para el payload de ingesta de contenido."""
+    unique_content_id: str = Field(..., description="ID único del contenido")
+    course_slug: str = Field(..., description="Slug del curso")
+    course_name: str = Field(..., description="Nombre del curso")
+    topic_id: str = Field(..., description="ID del tópico")
+    model: str = Field(..., description="Modelo del contenido")
+    version: str = Field(..., description="Versión del contenido")
+    title: str = Field(..., description="Título del contenido")
+    module: str = Field(..., description="Módulo del contenido")
+    notes: str = Field(..., description="Notas adicionales")
+    version_data: str = Field(..., description="Datos de la versión")
+    content: str = Field(..., min_length=1, description="Contenido principal a indexar")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "unique_content_id": "course_123_topic_456",
+                "course_slug": "mantenimiento-mecanico",
+                "course_name": "Mantenimiento Mecánico Automotriz",
+                "topic_id": "topic_456",
+                "model": "standard",
+                "version": "1.0",
+                "title": "Introducción al Mantenimiento",
+                "module": "Módulo 1",
+                "notes": "Versión inicial del contenido",
+                "version_data": "2025-01-15",
+                "content": "El mantenimiento mecánico automotriz es fundamental..."
+            }
+        }
+
+
+class ContentIngestResponse(BaseModel):
+    """Modelo para la respuesta de ingesta de contenido."""
+    message: str
+    job_id: Optional[int] = None
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "message": "Content received and queued for processing.",
+                "job_id": 123
+            }
+        }
 
 
 # ============================================================================
@@ -358,6 +405,105 @@ async def chat_endpoint(request: QueryRequest):
         raise HTTPException(
             status_code=500,
             detail=f"Error interno al procesar la pregunta: {str(e)}"
+        )
+
+
+@app.post("/api/v1/ingest", response_model=ContentIngestResponse, status_code=status.HTTP_202_ACCEPTED)
+async def ingest_content(payload: ContentIngestPayload):
+    """
+    Endpoint para ingesta asíncrona de contenido.
+
+    Recibe contenido desde un sistema externo y lo encola para procesamiento.
+    El contenido será indexado de forma asíncrona por un worker en background.
+
+    **Comportamiento:**
+    - Valida el payload recibido
+    - Crea un job en la cola de ingesta
+    - Retorna inmediatamente con 202 Accepted
+    - El worker procesará el job de forma asíncrona:
+      1. Eliminará el contenido antiguo con el mismo unique_content_id
+      2. Indexará el nuevo contenido
+      3. Actualizará el estado del job
+
+    **Parámetros:**
+    - `unique_content_id`: ID único para identificar y actualizar el contenido
+    - `content`: Texto principal a indexar
+    - `topic_id`, `version`, `title`: Metadata importante para filtrado
+    - Otros campos: Metadata adicional almacenada con el contenido
+
+    **Retorna:**
+    - `message`: Confirmación de que el contenido fue encolado
+    - `job_id`: ID del job creado para seguimiento
+    """
+    # Validar que el contenido no esté vacío
+    if not payload.unique_content_id or not payload.content:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="unique_content_id and content are required and cannot be empty."
+        )
+
+    # Obtener configuración de Supabase
+    supabase_url = os.getenv("SUPABASE_URL")
+    supabase_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+
+    if not supabase_url or not supabase_key:
+        logger.error("❌ SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY not configured")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Server configuration error. Please contact administrator."
+        )
+
+    try:
+        # Crear el payload del job (convertir a dict)
+        job_payload = payload.model_dump()
+
+        # Preparar datos para insertar en la tabla de jobs
+        job_data = {
+            "status": "pending",
+            "payload": job_payload
+        }
+
+        # Headers para autenticación con Supabase
+        headers = {
+            "apikey": supabase_key,
+            "Authorization": f"Bearer {supabase_key}",
+            "Content-Type": "application/json",
+            "Prefer": "return=representation"  # Para obtener el ID del job insertado
+        }
+
+        # Insertar el job en la tabla usando httpx
+        url = f"{supabase_url.rstrip('/')}/rest/v1/ingestion_jobs"
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(url, json=job_data, headers=headers)
+            response.raise_for_status()
+
+            # Obtener el ID del job insertado
+            result = response.json()
+            job_id = result[0].get("id") if result and len(result) > 0 else None
+
+            logger.info(
+                f"✅ Content queued for ingestion. "
+                f"Job ID: {job_id}, "
+                f"unique_content_id: {payload.unique_content_id}"
+            )
+
+            return ContentIngestResponse(
+                message="Content received and queued for processing.",
+                job_id=job_id
+            )
+
+    except httpx.HTTPStatusError as e:
+        logger.error(f"❌ HTTP error queuing ingestion job: {e.response.status_code} - {e.response.text}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to queue content for processing. Please try again."
+        )
+    except Exception as e:
+        logger.error(f"❌ Error queuing ingestion job: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to queue content for processing."
         )
 
 
