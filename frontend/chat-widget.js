@@ -3,15 +3,27 @@
  * =========================================
  *
  * Un widget de chat ligero, completamente personalizable con soporte para Markdown.
+ * Soporta múltiples cursos mediante configuración dinámica.
  *
  * Uso:
- * 1. Incluye este script en tu HTML:
+ * 1. Configura las variables requeridas ANTES de incluir el script:
+ *    <script>
+ *      // Requerido: ID del curso
+ *      window.CHATBOT_COURSE_ID = 'course_123';
+ *
+ *      // Opcional: ID del usuario para tracking
+ *      window.CHATBOT_USER_ID = 'user_456';
+ *
+ *      // Opcional: Personalización
+ *      window.CHATBOT_API_URL = 'http://localhost:8080/api/chat';
+ *      window.CHATBOT_TITLE = 'Asistente del Curso';
+ *      window.CHATBOT_SUBTITLE = 'Pregúntame sobre el curso';
+ *    </script>
+ *
+ * 2. Incluye el widget:
  *    <script src="chat-widget.js"></script>
  *
- * 2. Configura la URL de la API (opcional):
- *    <script>
- *      window.CHATBOT_API_URL = 'http://localhost:8080/api/chat';
- *    </script>
+ * Nota: CHATBOT_COURSE_ID es obligatorio. El widget mostrará un error si no está configurado.
  */
 
 (function() {
@@ -111,6 +123,8 @@
 
   const CONFIG = {
     apiUrl: window.CHATBOT_API_URL || 'http://localhost:8080/api/chat',
+    courseId: window.CHATBOT_COURSE_ID || null,  // Required: Course identifier
+    userId: window.CHATBOT_USER_ID || null,       // Optional: User identifier
     title: window.CHATBOT_TITLE || 'Asistente del Curso',
     subtitle: window.CHATBOT_SUBTITLE || 'Pregúntame sobre el curso',
     placeholder: window.CHATBOT_PLACEHOLDER || 'Escribe tu pregunta...',
@@ -118,6 +132,13 @@
     primaryColor: window.CHATBOT_PRIMARY_COLOR || '#4F46E5',
     accentColor: window.CHATBOT_ACCENT_COLOR || '#6366F1',
   };
+
+  // Validate required configuration
+  if (!CONFIG.courseId) {
+    console.error('❌ CHATBOT ERROR: CHATBOT_COURSE_ID is required but not configured.');
+    console.error('Please set window.CHATBOT_COURSE_ID before loading the widget.');
+    console.error('Example: window.CHATBOT_COURSE_ID = "course_123";');
+  }
 
   // ========================================================================
   // ESTILOS
@@ -695,6 +716,16 @@
         return;
       }
 
+      // Validar que courseId esté configurado
+      if (!CONFIG.courseId) {
+        console.error('❌ Cannot send message: CHATBOT_COURSE_ID is not configured');
+        this.addMessage(
+          'Error de configuración: El ID del curso no está configurado. Por favor contacta al administrador.',
+          false
+        );
+        return;
+      }
+
       // Agregar mensaje del usuario
       this.addMessage(message, true);
       this.elements.input.value = '';
@@ -708,12 +739,23 @@
       this.showTyping();
 
       try {
+        // Preparar el payload con course_id y user_id
+        const requestBody = {
+          question: message,
+          course_id: CONFIG.courseId,
+        };
+
+        // Agregar user_id si está configurado
+        if (CONFIG.userId) {
+          requestBody.user_id = CONFIG.userId;
+        }
+
         const response = await fetch(CONFIG.apiUrl, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
           },
-          body: JSON.stringify({ question: message }),
+          body: JSON.stringify(requestBody),
         });
 
         if (!response.ok) {

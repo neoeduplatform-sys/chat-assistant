@@ -8,14 +8,14 @@ que utiliza RAG (Retrieval-Augmented Generation) con Gemini y Supabase (pgvector
 
 import os
 import logging
-from typing import Optional
+from typing import Optional, List
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 from dotenv import load_dotenv
 from pathlib import Path
 import httpx
@@ -25,6 +25,16 @@ from llama_index.llms.google_genai import GoogleGenAI
 from llama_index.embeddings.google_genai import GoogleGenAIEmbedding
 
 from app.supabase_vector_store import SupabaseVectorStore
+from app.course_config import get_course_config_service
+from app.models import (
+    ChatRequest,
+    ChatResponse,
+    CourseConfigCreate,
+    CourseConfigUpdate,
+    CourseConfigResponse,
+    CourseConfigList,
+    ErrorResponse
+)
 
 # Cargar variables de entorno
 load_dotenv()
@@ -353,39 +363,94 @@ async def health_check():
         )
 
 
-@app.post("/api/chat", response_model=QueryResponse)
-async def chat_endpoint(request: QueryRequest):
+@app.post("/api/chat", response_model=ChatResponse)
+async def chat_endpoint(request: ChatRequest):
     """
-    Endpoint principal del chatbot.
+    Endpoint principal del chatbot con soporte multi-curso.
 
-    Recibe una pregunta del usuario y devuelve una respuesta
-    generada usando RAG (Retrieval-Augmented Generation).
+    Recibe una pregunta del usuario con el ID del curso y devuelve una respuesta
+    generada usando RAG (Retrieval-Augmented Generation) con el contexto del curso específico.
 
     **Parámetros:**
     - `question`: La pregunta del usuario sobre el contenido del curso
+    - `course_id`: ID del curso (requerido)
+    - `user_id`: ID del usuario (opcional, para tracking)
 
     **Retorna:**
     - `answer`: La respuesta generada por el chatbot
     - `sources`: Lista de fuentes utilizadas (opcional)
+    - `course_id`: ID del curso usado
+    - `user_id`: ID del usuario (si se proporcionó)
     """
-    if query_engine is None:
-        raise HTTPException(
-            status_code=503,
-            detail="El motor de consulta no está disponible. Verifica los logs del servidor."
-        )
-
-    logger.info(f"📩 Pregunta recibida: {request.question}")
+    logger.info(f"📩 Pregunta recibida: {request.question} | Course: {request.course_id}")
 
     try:
-        # Realizar la consulta
+        # 1. Obtener configuración del curso
+        course_service = get_course_config_service()
+        course_config = course_service.get_course_config(request.course_id, use_cache=True)
+
+        if not course_config:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Course '{request.course_id}' not found or inactive."
+            )
+
+        logger.info(f"✅ Course config retrieved: {course_config['course_name']}")
+        logger.info(f"   Table: {course_config['table_name']}")
+        logger.info(f"   RPC: {course_config['rpc_function']}")
+
+        # 2. Crear vector store dinámico para este curso
+        supabase_url = os.getenv("SUPABASE_URL")
+        supabase_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+        embed_dim = int(os.getenv("EMBEDDING_DIMENSIONS", "3072"))
+        match_threshold = float(os.getenv("MATCH_THRESHOLD", "0.5"))
+        similarity_top_k = int(os.getenv("SIMILARITY_TOP_K", "3"))
+
+        vector_store = SupabaseVectorStore(
+            supabase_url=supabase_url,
+            supabase_key=supabase_key,
+            table_name=course_config['table_name'],
+            rpc_function_name=course_config['rpc_function'],
+            embed_dim=embed_dim,
+            match_threshold=match_threshold,
+        )
+
+        # 3. Crear índice vectorial dinámico
+        index = VectorStoreIndex.from_vector_store(vector_store=vector_store)
+
+        # 4. Crear query engine con prompt personalizado
+        from llama_index.core.prompts import PromptTemplate
+
+        qa_prompt_template = PromptTemplate(
+            f"Eres un asistente educativo experto en {course_config['course_name']}. "
+            "Tu objetivo es ayudar a estudiantes a aprender sobre este tema.\n\n"
+            "IMPORTANTE: Siempre responde en español, sin importar el idioma de la pregunta.\n\n"
+            "Contexto de referencia:\n"
+            "{context_str}\n\n"
+            "Pregunta: {query_str}\n\n"
+            "Instrucciones:\n"
+            "1. Responde ÚNICAMENTE en español\n"
+            "2. Usa el contexto proporcionado para dar respuestas precisas\n"
+            "3. Si no encuentras la respuesta en el contexto, indícalo claramente\n"
+            "4. Sé claro, educativo y profesional\n\n"
+            "Respuesta en español:"
+        )
+
+        course_query_engine = index.as_query_engine(
+            streaming=False,
+            similarity_top_k=similarity_top_k,
+            text_qa_template=qa_prompt_template,
+        )
+
+        # 5. Realizar la consulta
         logger.info(f"🔍 Iniciando búsqueda vectorial y generación de respuesta...")
-        response = query_engine.query(request.question)
+        response = course_query_engine.query(request.question)
         logger.info(f"✅ Query ejecutado exitosamente")
 
-        # Extraer la respuesta
+        # 6. Extraer la respuesta
         answer = str(response)
 
-        # Extraer fuentes si están disponibles
+        # 7. Extraer fuentes si están disponibles
         sources = []
         source_count = 0
         if hasattr(response, 'source_nodes'):
@@ -395,13 +460,15 @@ async def chat_endpoint(request: QueryRequest):
             for node in response.source_nodes:
                 if hasattr(node, 'node') and hasattr(node.node, 'metadata'):
                     metadata = node.node.metadata
-                    if 'file_name' in metadata:
-                        sources.append(metadata['file_name'])
+                    # Extraer título o unique_content_id como fuente
+                    source = metadata.get('title') or metadata.get('unique_content_id') or metadata.get('file_name')
+                    if source:
+                        sources.append(source)
 
         # Eliminar duplicados de fuentes
         sources = list(set(sources)) if sources else None
 
-        # Validar si la base de datos está vacía
+        # 8. Validar si la base de datos está vacía
         if source_count == 0:
             logger.warning(f"⚠️  Base de datos vacía: No se encontraron documentos relevantes")
             logger.warning(f"   La respuesta de Gemini puede ser generada sin contexto del curso")
@@ -418,12 +485,19 @@ async def chat_endpoint(request: QueryRequest):
         else:
             logger.info(f"📚 Sin fuentes disponibles (base de datos vacía)")
 
-        return QueryResponse(answer=answer, sources=sources)
+        return ChatResponse(
+            answer=answer,
+            sources=sources,
+            course_id=request.course_id,
+            user_id=request.user_id
+        )
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"❌ Error al procesar la consulta: {e}", exc_info=True)
         raise HTTPException(
-            status_code=500,
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error interno al procesar la pregunta: {str(e)}"
         )
 
@@ -438,6 +512,7 @@ async def ingest_content(payload: ContentIngestPayload):
 
     **Comportamiento:**
     - Valida el payload recibido
+    - Valida que el curso existe y está activo
     - Crea un job en la cola de ingesta
     - Retorna inmediatamente con 202 Accepted
     - El worker procesará el job de forma asíncrona:
@@ -447,6 +522,7 @@ async def ingest_content(payload: ContentIngestPayload):
 
     **Parámetros:**
     - `unique_content_id`: ID único para identificar y actualizar el contenido
+    - `course_slug`: ID del curso (debe existir en course_configurations)
     - `content`: Texto principal a indexar
     - `topic_id`, `version`, `title`: Metadata importante para filtrado
     - Otros campos: Metadata adicional almacenada con el contenido
@@ -460,6 +536,28 @@ async def ingest_content(payload: ContentIngestPayload):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="unique_content_id and content are required and cannot be empty."
+        )
+
+    # Validar que el curso existe
+    try:
+        course_service = get_course_config_service()
+        course_config = course_service.get_course_config(payload.course_slug, use_cache=True)
+
+        if not course_config:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Course '{payload.course_slug}' not found or inactive. "
+                       f"Please create the course configuration first via POST /api/v1/courses"
+            )
+
+        logger.info(f"✅ Course validated for ingestion: {course_config['course_name']}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error validating course: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error validating course configuration."
         )
 
     # Obtener configuración de Supabase
@@ -524,6 +622,232 @@ async def ingest_content(payload: ContentIngestPayload):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to queue content for processing."
+        )
+
+
+# ============================================================================
+# COURSE MANAGEMENT ENDPOINTS
+# ============================================================================
+
+@app.get(
+    "/api/v1/courses",
+    response_model=CourseConfigList,
+    tags=["Course Management"],
+    summary="List all course configurations"
+)
+async def list_courses(active_only: bool = True):
+    """
+    List all course configurations.
+
+    **Parameters:**
+    - `active_only`: If true, only return active courses (default: true)
+
+    **Returns:**
+    - List of course configurations with metadata
+    """
+    try:
+        course_service = get_course_config_service()
+        courses = course_service.list_course_configs(active_only=active_only)
+
+        return CourseConfigList(
+            courses=[CourseConfigResponse(**course) for course in courses],
+            total=len(courses)
+        )
+
+    except Exception as e:
+        logger.error(f"❌ Error listing courses: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to retrieve course list."
+        )
+
+
+@app.get(
+    "/api/v1/courses/{course_id}",
+    response_model=CourseConfigResponse,
+    tags=["Course Management"],
+    summary="Get specific course configuration"
+)
+async def get_course(course_id: str):
+    """
+    Get a specific course configuration by ID.
+
+    **Parameters:**
+    - `course_id`: The unique course identifier
+
+    **Returns:**
+    - Course configuration details
+    """
+    try:
+        course_service = get_course_config_service()
+        course = course_service.get_course_config(course_id, use_cache=True)
+
+        if not course:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Course '{course_id}' not found or inactive."
+            )
+
+        return CourseConfigResponse(**course)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error retrieving course {course_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to retrieve course configuration."
+        )
+
+
+@app.post(
+    "/api/v1/courses",
+    response_model=CourseConfigResponse,
+    status_code=status.HTTP_201_CREATED,
+    tags=["Course Management"],
+    summary="Create new course configuration"
+)
+async def create_course(course_data: CourseConfigCreate):
+    """
+    Create a new course configuration.
+
+    **Parameters:**
+    - `course_data`: Course configuration details including:
+      - `course_id`: Unique identifier (required)
+      - `course_name`: Human-readable name
+      - `course_slug`: URL-friendly slug
+      - `table_name`: Supabase table name for vectors
+      - `rpc_function`: Supabase RPC function for search
+      - `active`: Whether the course is active (default: true)
+      - `description`: Optional description
+      - `metadata`: Optional additional metadata
+
+    **Returns:**
+    - Created course configuration
+
+    **Note:**
+    - The course_id must be unique
+    - Make sure the corresponding Supabase table and RPC function exist
+    """
+    try:
+        course_service = get_course_config_service()
+        created_course = course_service.create_course_config(course_data.model_dump())
+
+        logger.info(f"✅ Course created: {course_data.course_id}")
+        return CourseConfigResponse(**created_course)
+
+    except ValueError as e:
+        # Course ID already exists
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(e)
+        )
+    except ValidationError as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Validation error: {str(e)}"
+        )
+    except Exception as e:
+        logger.error(f"❌ Error creating course: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to create course configuration."
+        )
+
+
+@app.put(
+    "/api/v1/courses/{course_id}",
+    response_model=CourseConfigResponse,
+    tags=["Course Management"],
+    summary="Update course configuration"
+)
+async def update_course(course_id: str, update_data: CourseConfigUpdate):
+    """
+    Update an existing course configuration.
+
+    **Parameters:**
+    - `course_id`: The course identifier
+    - `update_data`: Fields to update (all optional)
+
+    **Returns:**
+    - Updated course configuration
+    """
+    try:
+        course_service = get_course_config_service()
+
+        # Filter out None values
+        update_dict = {k: v for k, v in update_data.model_dump().items() if v is not None}
+
+        if not update_dict:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No fields provided for update."
+            )
+
+        updated_course = course_service.update_course_config(course_id, update_dict)
+
+        if not updated_course:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Course '{course_id}' not found."
+            )
+
+        logger.info(f"✅ Course updated: {course_id}")
+        return CourseConfigResponse(**updated_course)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error updating course {course_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to update course configuration."
+        )
+
+
+@app.delete(
+    "/api/v1/courses/{course_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    tags=["Course Management"],
+    summary="Delete/deactivate course configuration"
+)
+async def delete_course(course_id: str, hard_delete: bool = False):
+    """
+    Delete or deactivate a course configuration.
+
+    **Parameters:**
+    - `course_id`: The course identifier
+    - `hard_delete`: If true, permanently delete; if false, just deactivate (default: false)
+
+    **Returns:**
+    - 204 No Content on success
+
+    **Note:**
+    - Soft delete (default) sets active=false, preserving the record
+    - Hard delete permanently removes the record from the database
+    - Soft delete is recommended to maintain data integrity
+    """
+    try:
+        course_service = get_course_config_service()
+        success = course_service.delete_course_config(course_id, soft_delete=not hard_delete)
+
+        if not success:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Course '{course_id}' not found."
+            )
+
+        action = "deactivated" if not hard_delete else "deleted"
+        logger.info(f"✅ Course {action}: {course_id}")
+        return None  # 204 No Content
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error deleting course {course_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to delete course configuration."
         )
 
 

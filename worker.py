@@ -29,9 +29,10 @@ from llama_index.llms.google_genai import GoogleGenAI
 from llama_index.embeddings.google_genai import GoogleGenAIEmbedding
 from llama_index.core.node_parser import SentenceSplitter
 
-# Importar el vector store personalizado
+# Importar el vector store personalizado y course config service
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from app.supabase_vector_store import SupabaseVectorStore
+from app.course_config import get_course_config_service
 
 # Cargar variables de entorno
 load_dotenv()
@@ -55,7 +56,7 @@ def validate_environment() -> None:
         "GOOGLE_API_KEY",
         "SUPABASE_URL",
         "SUPABASE_SERVICE_ROLE_KEY",
-        "SUPABASE_TABLE_NAME",
+        # Note: SUPABASE_TABLE_NAME is no longer required as it's now dynamic per course
     ]
 
     missing_vars = [var for var in required_vars if not os.getenv(var)]
@@ -93,44 +94,65 @@ def configure_llama_index() -> None:
     logger.info("✅ LlamaIndex configurado correctamente")
 
 
-def connect_to_supabase() -> SupabaseVectorStore:
-    """Crea y retorna una conexión al vector store de Supabase."""
-    supabase_url = os.getenv("SUPABASE_URL")
-    supabase_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-    table_name = os.getenv("SUPABASE_TABLE_NAME", "documents")
-    rpc_function = os.getenv("SUPABASE_RPC_FUNCTION", "match_documents")
-    embed_dim = int(os.getenv("EMBEDDING_DIMENSIONS", "3072"))
-    match_threshold = float(os.getenv("MATCH_THRESHOLD", "0.5"))
+def create_vector_store_for_course(course_id: str) -> SupabaseVectorStore:
+    """
+    Crea una instancia de vector store dinámica basada en la configuración del curso.
 
-    logger.info("🔌 Conectando a Supabase...")
-    logger.info(f"   - URL: {supabase_url}")
-    logger.info(f"   - Tabla: {table_name}")
-    logger.info(f"   - Función RPC: {rpc_function}")
+    Args:
+        course_id: ID del curso (course_slug)
 
-    vector_store = SupabaseVectorStore(
-        supabase_url=supabase_url,
-        supabase_key=supabase_key,
-        table_name=table_name,
-        rpc_function_name=rpc_function,
-        embed_dim=embed_dim,
-        match_threshold=match_threshold,
-    )
+    Returns:
+        SupabaseVectorStore configurado para el curso específico
 
-    logger.info("✅ Conexión a Supabase establecida")
-    return vector_store
+    Raises:
+        ValueError: Si el curso no existe o no está configurado
+    """
+    try:
+        # Obtener configuración del curso
+        course_service = get_course_config_service()
+        course_config = course_service.get_course_config(course_id, use_cache=True)
+
+        if not course_config:
+            raise ValueError(f"Course '{course_id}' not found or inactive")
+
+        # Configuración de Supabase
+        supabase_url = os.getenv("SUPABASE_URL")
+        supabase_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+        embed_dim = int(os.getenv("EMBEDDING_DIMENSIONS", "3072"))
+        match_threshold = float(os.getenv("MATCH_THRESHOLD", "0.5"))
+
+        logger.info(f"🔌 Conectando a Supabase para curso: {course_config['course_name']}")
+        logger.info(f"   - URL: {supabase_url}")
+        logger.info(f"   - Tabla: {course_config['table_name']}")
+        logger.info(f"   - Función RPC: {course_config['rpc_function']}")
+
+        vector_store = SupabaseVectorStore(
+            supabase_url=supabase_url,
+            supabase_key=supabase_key,
+            table_name=course_config['table_name'],
+            rpc_function_name=course_config['rpc_function'],
+            embed_dim=embed_dim,
+            match_threshold=match_threshold,
+        )
+
+        logger.info(f"✅ Vector store creado para curso: {course_id}")
+        return vector_store
+
+    except Exception as e:
+        logger.error(f"❌ Error creando vector store para curso {course_id}: {e}")
+        raise
 
 
 # ============================================================================
 # PROCESAMIENTO DE JOBS
 # ============================================================================
 
-def process_job(job: Dict[str, Any], vector_store: SupabaseVectorStore) -> tuple[str, Optional[str]]:
+def process_job(job: Dict[str, Any]) -> tuple[str, Optional[str]]:
     """
-    Procesa un job de ingesta.
+    Procesa un job de ingesta con configuración dinámica de curso.
 
     Args:
         job: Diccionario con los datos del job (id, payload, etc.)
-        vector_store: Instancia del vector store
 
     Returns:
         Tupla (status, error_message)
@@ -141,13 +163,29 @@ def process_job(job: Dict[str, Any], vector_store: SupabaseVectorStore) -> tuple
     payload = job['payload']
     unique_id = payload.get('unique_content_id')
     content = payload.get('content')
+    course_slug = payload.get('course_slug')
 
     if not unique_id or not content:
         logger.error(f"❌ Job {job_id} tiene payload inválido: falta unique_content_id o content")
         return "failed", "Missing unique_content_id or content in payload"
 
+    if not course_slug:
+        logger.error(f"❌ Job {job_id} tiene payload inválido: falta course_slug")
+        return "failed", "Missing course_slug in payload"
+
     try:
         logger.info(f"🚀 Procesando job {job_id} para unique_content_id: {unique_id}")
+        logger.info(f"   Curso: {course_slug}")
+
+        # === 0. SETUP: Crear vector store dinámico para el curso ===
+        try:
+            vector_store = create_vector_store_for_course(course_slug)
+        except ValueError as e:
+            logger.error(f"❌ Error: {e}")
+            return "failed", str(e)
+        except Exception as e:
+            logger.error(f"❌ Error creando vector store: {e}")
+            return "failed", f"Failed to create vector store: {str(e)}"
 
         # === 1. DELETE: Eliminar contenido antiguo ===
         # Eliminar todos los chunks existentes con este unique_content_id
@@ -287,13 +325,14 @@ def update_job_status(
 
 def main_worker_loop():
     """
-    Loop principal del worker.
+    Loop principal del worker con soporte multi-curso.
 
     Continuamente:
     1. Consulta por nuevos jobs
-    2. Procesa el job
-    3. Actualiza el estado
-    4. Espera antes de la siguiente iteración
+    2. Crea vector store dinámico basado en el curso del job
+    3. Procesa el job
+    4. Actualiza el estado
+    5. Espera antes de la siguiente iteración
     """
     logger.info("=" * 60)
     logger.info("🚀 INGESTION WORKER STARTED")
@@ -305,8 +344,13 @@ def main_worker_loop():
     # Configurar LlamaIndex
     configure_llama_index()
 
-    # Conectar a Supabase
-    vector_store = connect_to_supabase()
+    # Inicializar course config service (esto cargará la cache)
+    try:
+        get_course_config_service()
+        logger.info("✅ Course configuration service initialized")
+    except Exception as e:
+        logger.error(f"❌ Error initializing course config service: {e}")
+        logger.error("El worker continuará, pero los jobs fallarán si el curso no existe")
 
     # Obtener configuración
     supabase_url = os.getenv("SUPABASE_URL")
@@ -335,8 +379,8 @@ def main_worker_loop():
             logger.info("")
             logger.info(f"📥 Job #{job_count} obtenido: ID={job_id}")
 
-            # 2. Procesar el job
-            status, error_msg = process_job(job, vector_store)
+            # 2. Procesar el job (el vector store se crea dinámicamente dentro)
+            status, error_msg = process_job(job)
 
             # 3. Actualizar el estado del job
             update_job_status(job_id, status, error_msg, supabase_url, supabase_key)
