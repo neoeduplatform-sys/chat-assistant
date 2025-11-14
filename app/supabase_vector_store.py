@@ -205,7 +205,7 @@ class SupabaseVectorStore(BasePydanticVectorStore):
         # Usar PostgREST syntax para query en JSONB
         # metadata->>'key' = 'value'
         # URL encoding: metadata->>key=eq.value
-        url = f"{self.supabase_url}/rest/v1/{self.table_name}?metadata->{filter_key}=eq.{filter_value}"
+        url = f"{self.supabase_url}/rest/v1/{self.table_name}?metadata->>{filter_key}=eq.{filter_value}"
 
         try:
             # Agregar header para obtener el número de filas afectadas
