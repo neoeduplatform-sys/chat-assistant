@@ -37,6 +37,7 @@ Recargar las Variables de Entorno en Docker (IMPORTANTE)
   3. Verificar que se Cargó Correctamente
 
   # Ver los logs del servicio FastAPI
+  docker compose logs -f fastapi_app
   docker compose logs fastapi_app | grep "RPC Function"
 
   # Deberías ver algo como:
