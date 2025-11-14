@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Test Chat Widget - Markdown Support</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+      margin: 0;
+      padding: 40px;
+      background: #f5f5f5;
+    }
+    .container {
+      max-width: 800px;
+      margin: 0 auto;
+      background: white;
+      padding: 40px;
+      border-radius: 12px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    }
+    h1 {
+      color: #333;
+      margin-bottom: 20px;
+    }
+    .info {
+      background: #f0f9ff;
+      border-left: 4px solid #3b82f6;
+      padding: 16px;
+      margin: 20px 0;
+      border-radius: 4px;
+    }
+    .info h3 {
+      margin-top: 0;
+      color: #1e40af;
+    }
+    .example-response {
+      background: #f9fafb;
+      border: 1px solid #e5e7eb;
+      padding: 20px;
+      border-radius: 8px;
+      margin: 20px 0;
+    }
+    .example-response h4 {
+      margin-top: 0;
+      color: #374151;
+    }
+    .example-response pre {
+      background: #1f2937;
+      color: #f9fafb;
+      padding: 12px;
+      border-radius: 6px;
+      overflow-x: auto;
+      font-size: 13px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>🧪 Test: Chat Widget con Soporte para Markdown</h1>
+
+    <div class="info">
+      <h3>✅ Widget Actualizado con Markdown</h3>
+      <p>El widget ahora soporta renderizado de Markdown en las respuestas del bot:</p>
+      <ul>
+        <li><strong>Negrita</strong> y <em>cursiva</em></li>
+        <li>Listas con viñetas y numeradas</li>
+        <li>Bloques de código con resaltado</li>
+        <li>Enlaces clickeables</li>
+        <li>Encabezados (H1-H6)</li>
+        <li>Tablas</li>
+        <li>Citas en bloque</li>
+        <li>Líneas horizontales</li>
+      </ul>
+    </div>
+
+    <div class="example-response">
+      <h4>📝 Ejemplo de Respuesta con Markdown</h4>
+      <p>Prueba enviando una pregunta y el bot responderá con formato Markdown:</p>
+      <pre>El **mantenimiento preventivo** es fundamental:
+
+1. Revisión de *fluidos*
+2. Inspección de frenos
+3. Verificación de neumáticos
+
+Para más información, visita [nuestra documentación](https://example.com).
+
+```python
+def check_maintenance():
+    return "OK"
+```
+
+> Recuerda: La seguridad es lo primero.</pre>
+    </div>
+
+    <div class="info">
+      <h3>🔒 Seguridad</h3>
+      <p>El widget incluye medidas de seguridad:</p>
+      <ul>
+        <li>Sanitización de enlaces (bloquea javascript: y data: URLs)</li>
+        <li>Escape de HTML en mensajes del usuario</li>
+        <li>Configuración segura de marked.js</li>
+        <li>Fallback a texto plano si marked.js no se carga</li>
+      </ul>
+    </div>
+
+    <p style="color: #6b7280; margin-top: 40px;">
+      👉 <strong>Nota:</strong> Haz clic en el botón de chat en la esquina inferior derecha para probar el widget.
+    </p>
+  </div>
+
+  <!-- Configuración del widget -->
+  <script>
+    // Configurar la URL de la API
+    window.CHATBOT_API_URL = 'http://localhost:8080/api/chat';
+    window.CHATBOT_TITLE = 'Asistente del Curso';
+    window.CHATBOT_SUBTITLE = 'Pregúntame sobre el curso';
+  </script>
+
+  <!-- Cargar el widget -->
+  <script src="chat-widget.js"></script>
+</body>
+</html>

@@ -2,7 +2,7 @@
  * Widget de Chat para el Chatbot Educativo
  * =========================================
  *
- * Un widget de chat ligero, sin dependencias, completamente personalizable.
+ * Un widget de chat ligero, completamente personalizable con soporte para Markdown.
  *
  * Uso:
  * 1. Incluye este script en tu HTML:
@@ -16,6 +16,94 @@
 
 (function() {
   'use strict';
+
+  // ========================================================================
+  // CARGAR MARKED.JS PARA MARKDOWN
+  // ========================================================================
+
+  let markedLoaded = false;
+  let markedLoadPromise = null;
+
+  function loadMarked() {
+    if (markedLoadPromise) {
+      return markedLoadPromise;
+    }
+
+    markedLoadPromise = new Promise((resolve, reject) => {
+      // Si marked ya está cargado globalmente, usarlo
+      if (window.marked) {
+        markedLoaded = true;
+        configureMarked();
+        resolve();
+        return;
+      }
+
+      // Cargar marked.js desde CDN
+      const script = document.createElement('script');
+      script.src = 'https://cdn.jsdelivr.net/npm/marked@11.1.1/marked.min.js';
+      script.async = true;
+      script.onload = () => {
+        markedLoaded = true;
+        configureMarked();
+        resolve();
+      };
+      script.onerror = () => {
+        console.warn('No se pudo cargar marked.js, usando texto plano');
+        reject();
+      };
+      document.head.appendChild(script);
+    });
+
+    return markedLoadPromise;
+  }
+
+  function configureMarked() {
+    if (window.marked) {
+      // Configurar marked con opciones de seguridad
+      marked.setOptions({
+        breaks: true,        // Convertir \n en <br>
+        gfm: true,          // GitHub Flavored Markdown
+        headerIds: false,   // No generar IDs en headers
+        mangle: false,      // No ofuscar emails
+      });
+
+      // Configurar renderer para seguridad
+      const renderer = new marked.Renderer();
+
+      // Sanitizar links para prevenir javascript: URLs
+      const originalLink = renderer.link.bind(renderer);
+      renderer.link = (href, title, text) => {
+        if (href.startsWith('javascript:') || href.startsWith('data:')) {
+          return text;
+        }
+        return originalLink(href, title, text);
+      };
+
+      marked.use({ renderer });
+    }
+  }
+
+  function parseMarkdown(text) {
+    if (markedLoaded && window.marked) {
+      try {
+        return marked.parse(text);
+      } catch (error) {
+        console.error('Error al parsear markdown:', error);
+        return escapeHtml(text);
+      }
+    }
+    // Fallback a texto plano con HTML escapado
+    return escapeHtml(text).replace(/\n/g, '<br>');
+  }
+
+  function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+  }
+
+  // Iniciar carga de marked.js
+  loadMarked();
 
   // ========================================================================
   // CONFIGURACIÓN
@@ -294,6 +382,137 @@
       color: #374151;
     }
 
+    /* Markdown formatting styles */
+    .chatbot-message-bubble h1,
+    .chatbot-message-bubble h2,
+    .chatbot-message-bubble h3,
+    .chatbot-message-bubble h4,
+    .chatbot-message-bubble h5,
+    .chatbot-message-bubble h6 {
+      margin: 0.5em 0 0.3em 0;
+      font-weight: 600;
+      line-height: 1.3;
+    }
+
+    .chatbot-message-bubble h1 { font-size: 1.4em; }
+    .chatbot-message-bubble h2 { font-size: 1.3em; }
+    .chatbot-message-bubble h3 { font-size: 1.2em; }
+    .chatbot-message-bubble h4 { font-size: 1.1em; }
+
+    .chatbot-message-bubble p {
+      margin: 0.5em 0;
+    }
+
+    .chatbot-message-bubble p:first-child {
+      margin-top: 0;
+    }
+
+    .chatbot-message-bubble p:last-child {
+      margin-bottom: 0;
+    }
+
+    .chatbot-message-bubble strong {
+      font-weight: 600;
+    }
+
+    .chatbot-message-bubble em {
+      font-style: italic;
+    }
+
+    .chatbot-message-bubble code {
+      background: rgba(0, 0, 0, 0.05);
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-family: 'Monaco', 'Menlo', 'Courier New', monospace;
+      font-size: 0.9em;
+    }
+
+    .chatbot-message.user .chatbot-message-bubble code {
+      background: rgba(255, 255, 255, 0.2);
+    }
+
+    .chatbot-message-bubble pre {
+      background: #F3F4F6;
+      border: 1px solid #E5E7EB;
+      border-radius: 8px;
+      padding: 12px;
+      overflow-x: auto;
+      margin: 0.8em 0;
+    }
+
+    .chatbot-message-bubble pre code {
+      background: none;
+      padding: 0;
+      border-radius: 0;
+      font-size: 0.85em;
+    }
+
+    .chatbot-message.user .chatbot-message-bubble pre {
+      background: rgba(255, 255, 255, 0.15);
+      border-color: rgba(255, 255, 255, 0.3);
+    }
+
+    .chatbot-message-bubble ul,
+    .chatbot-message-bubble ol {
+      margin: 0.8em 0;
+      padding-left: 24px;
+    }
+
+    .chatbot-message-bubble ul {
+      list-style-type: disc;
+    }
+
+    .chatbot-message-bubble ol {
+      list-style-type: decimal;
+    }
+
+    .chatbot-message-bubble li {
+      margin: 0.3em 0;
+    }
+
+    .chatbot-message-bubble a {
+      color: ${CONFIG.primaryColor};
+      text-decoration: underline;
+    }
+
+    .chatbot-message.user .chatbot-message-bubble a {
+      color: white;
+      text-decoration: underline;
+    }
+
+    .chatbot-message-bubble blockquote {
+      border-left: 3px solid #E5E7EB;
+      margin: 0.8em 0;
+      padding-left: 12px;
+      color: #6B7280;
+      font-style: italic;
+    }
+
+    .chatbot-message-bubble hr {
+      border: none;
+      border-top: 1px solid #E5E7EB;
+      margin: 1em 0;
+    }
+
+    .chatbot-message-bubble table {
+      border-collapse: collapse;
+      width: 100%;
+      margin: 0.8em 0;
+      font-size: 0.9em;
+    }
+
+    .chatbot-message-bubble th,
+    .chatbot-message-bubble td {
+      border: 1px solid #E5E7EB;
+      padding: 8px;
+      text-align: left;
+    }
+
+    .chatbot-message-bubble th {
+      background: #F3F4F6;
+      font-weight: 600;
+    }
+
     /* Mobile responsive */
     @media (max-width: 480px) {
       .chatbot-window {
@@ -421,7 +640,13 @@
 
       const bubbleDiv = document.createElement('div');
       bubbleDiv.className = 'chatbot-message-bubble';
-      bubbleDiv.textContent = text;
+
+      // Usar markdown solo para mensajes del bot
+      if (!isUser && text) {
+        bubbleDiv.innerHTML = parseMarkdown(text);
+      } else {
+        bubbleDiv.textContent = text;
+      }
 
       messageDiv.appendChild(bubbleDiv);
 
