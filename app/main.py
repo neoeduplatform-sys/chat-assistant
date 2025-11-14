@@ -99,7 +99,7 @@ class HealthResponse(BaseModel):
 class ContentIngestPayload(BaseModel):
     """Modelo para el payload de ingesta de contenido."""
     unique_content_id: str = Field(..., description="ID único del contenido")
-    course_slug: str = Field(..., description="Slug del curso")
+    course_id: str = Field(..., description="ID único del curso")
     course_name: str = Field(..., description="Nombre del curso")
     topic_id: str = Field(..., description="ID del tópico")
     model: str = Field(..., description="Modelo del contenido")
@@ -114,7 +114,7 @@ class ContentIngestPayload(BaseModel):
         json_schema_extra = {
             "example": {
                 "unique_content_id": "course_123_topic_456",
-                "course_slug": "mantenimiento-mecanico",
+                "course_id": "mantenimiento-mecanico",
                 "course_name": "Mantenimiento Mecánico Automotriz",
                 "topic_id": "topic_456",
                 "model": "standard",
@@ -522,7 +522,7 @@ async def ingest_content(payload: ContentIngestPayload):
 
     **Parámetros:**
     - `unique_content_id`: ID único para identificar y actualizar el contenido
-    - `course_slug`: ID del curso (debe existir en course_configurations)
+    - `course_id`: ID del curso (debe existir en course_configurations)
     - `content`: Texto principal a indexar
     - `topic_id`, `version`, `title`: Metadata importante para filtrado
     - Otros campos: Metadata adicional almacenada con el contenido
@@ -541,12 +541,12 @@ async def ingest_content(payload: ContentIngestPayload):
     # Validar que el curso existe
     try:
         course_service = get_course_config_service()
-        course_config = course_service.get_course_config(payload.course_slug, use_cache=True)
+        course_config = course_service.get_course_config(payload.course_id, use_cache=True)
 
         if not course_config:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Course '{payload.course_slug}' not found or inactive. "
+                detail=f"Course '{payload.course_id}' not found or inactive. "
                        f"Please create the course configuration first via POST /api/v1/courses"
             )
 

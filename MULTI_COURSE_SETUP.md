@@ -200,7 +200,7 @@ curl -X POST http://localhost:8080/api/v1/ingest \
   -H "Content-Type: application/json" \
   -d '{
     "unique_content_id": "course_mant_mec_topic_001",
-    "course_slug": "course_mant_mec",
+    "course_id": "course_mant_mec",
     "course_name": "Mantenimiento Mecánico Automotriz",
     "topic_id": "topic_001",
     "model": "standard",
@@ -316,7 +316,7 @@ curl -X POST http://localhost:8080/api/v1/courses \
   }'
 
 # 2. Run SQL to create table + RPC (adapt templates above)
-# 3. Ingest content with course_slug="course_elect_auto"
+# 3. Ingest content with course_id="course_elect_auto"
 # 4. Test chat with course_id="course_elect_auto"
 ```
 

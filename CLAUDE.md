@@ -2,6 +2,15 @@
 
 ## 📋 Notas Importantes
 - Docker CLI es `docker` en lugar de `docker-compose` en este sistema
+- **📚 NUEVO:** Ver `COURSE_SETUP_BEST_PRACTICES.md` para configuración validada y troubleshooting
+- **⚙️ Configuración recomendada:** `MATCH_THRESHOLD=0.5` (validado con 30k+ vectores)
+
+## 📚 Documentación Disponible
+- **`CLAUDE.md`** (este archivo) - Arquitectura y flujos del sistema
+- **`MULTI_COURSE_SETUP.md`** - Setup inicial de multi-curso
+- **`COURSE_SETUP_BEST_PRACTICES.md`** - ⭐ Configuración validada y troubleshooting
+- **`fix_rpc_timeout.sql`** - Diagnóstico de timeouts
+- **`deep_diagnostics.sql`** - Diagnósticos avanzados
 
 ---
 
@@ -272,7 +281,7 @@
 {
   "unique_content_id": "course_123_topic_456",  // ID único para upsert
   "content": "Texto principal a indexar...",     // Contenido principal
-  "course_slug": "mantenimiento-mecanico",       // Metadata
+  "course_id": "mantenimiento-mecanico",         // ID del curso
   "course_name": "Mantenimiento Mecánico",       // Metadata
   "topic_id": "topic_456",                       // Metadata (filtrable)
   "version": "1.0",                              // Metadata (filtrable)
@@ -531,7 +540,7 @@ curl -X POST http://localhost:8080/api/v1/ingest \
   -H "Content-Type: application/json" \
   -d '{
     "unique_content_id": "course_123_topic_456",
-    "course_slug": "mantenimiento-mecanico",
+    "course_id": "mantenimiento-mecanico",
     "course_name": "Mantenimiento Mecánico Automotriz",
     "topic_id": "topic_456",
     "model": "standard",
@@ -576,7 +585,7 @@ curl -X POST http://localhost:8080/api/v1/ingest \
   -H "Content-Type: application/json" \
   -d '{
     "unique_content_id": "test_123",
-    "course_slug": "test-course",
+    "course_id": "test-course",
     "course_name": "Test Course",
     "topic_id": "topic_1",
     "model": "test",
@@ -749,7 +758,7 @@ curl -X POST http://localhost:8080/api/v1/ingest \
   -H "Content-Type: application/json" \
   -d '{
     "unique_content_id": "test_001",
-    "course_slug": "test",
+    "course_id": "test",
     "course_name": "Test Course",
     "topic_id": "1",
     "model": "test",
@@ -821,7 +830,7 @@ Content-Type: application/json
 {
   "unique_content_id": "string (requerido, único por contenido)",
   "content": "string (requerido, texto a indexar)",
-  "course_slug": "string",
+  "course_id": "string (requerido, ID del curso)",
   "course_name": "string",
   "topic_id": "string",
   "model": "string",

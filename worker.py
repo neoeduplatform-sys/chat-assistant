@@ -163,23 +163,23 @@ def process_job(job: Dict[str, Any]) -> tuple[str, Optional[str]]:
     payload = job['payload']
     unique_id = payload.get('unique_content_id')
     content = payload.get('content')
-    course_slug = payload.get('course_slug')
+    course_id = payload.get('course_id')
 
     if not unique_id or not content:
         logger.error(f"❌ Job {job_id} tiene payload inválido: falta unique_content_id o content")
         return "failed", "Missing unique_content_id or content in payload"
 
-    if not course_slug:
-        logger.error(f"❌ Job {job_id} tiene payload inválido: falta course_slug")
-        return "failed", "Missing course_slug in payload"
+    if not course_id:
+        logger.error(f"❌ Job {job_id} tiene payload inválido: falta course_id")
+        return "failed", "Missing course_id in payload"
 
     try:
         logger.info(f"🚀 Procesando job {job_id} para unique_content_id: {unique_id}")
-        logger.info(f"   Curso: {course_slug}")
+        logger.info(f"   Curso: {course_id}")
 
         # === 0. SETUP: Crear vector store dinámico para el curso ===
         try:
-            vector_store = create_vector_store_for_course(course_slug)
+            vector_store = create_vector_store_for_course(course_id)
         except ValueError as e:
             logger.error(f"❌ Error: {e}")
             return "failed", str(e)
@@ -197,7 +197,7 @@ def process_job(job: Dict[str, Any]) -> tuple[str, Optional[str]]:
         # Preparar metadata con los campos importantes
         metadata = {
             "unique_content_id": unique_id,
-            "course_slug": payload.get("course_slug", ""),
+            "course_id": payload.get("course_id", ""),
             "course_name": payload.get("course_name", ""),
             "topic_id": payload.get("topic_id", ""),
             "model": payload.get("model", ""),

@@ -155,7 +155,7 @@ class IngestionRequest(BaseModel):
     """Request model for content ingestion endpoint"""
     unique_content_id: str = Field(..., min_length=1, max_length=500, description="Unique content identifier for upserts")
     content: str = Field(..., min_length=1, description="Content text to be indexed")
-    course_slug: str = Field(..., min_length=1, max_length=255, description="Course slug (used as course_id)")
+    course_id: str = Field(..., min_length=1, max_length=255, description="Course unique identifier")
     course_name: str = Field(..., description="Course name")
     topic_id: Optional[str] = Field(None, description="Topic identifier")
     model: Optional[str] = Field(None, description="Model identifier")
