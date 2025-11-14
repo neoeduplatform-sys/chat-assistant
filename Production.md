@@ -16,6 +16,36 @@
       * `--build` forces Docker to build your images from your `Dockerfile`.
 
 -----
+Recargar las Variables de Entorno en Docker (IMPORTANTE)
+
+  Docker NO recarga el .env automáticamente. Debes hacer:
+
+  # En tu servidor de producción:
+
+  # Detener los contenedores
+  docker compose down
+
+  # Reconstruir las imágenes (para asegurar que tomen el nuevo .env)
+  docker compose build --no-cache
+
+  # Levantar los servicios
+  docker compose up -d
+
+  # Verificar que levantaron correctamente
+  docker compose ps
+
+  3. Verificar que se Cargó Correctamente
+
+  # Ver los logs del servicio FastAPI
+  docker compose logs fastapi_app | grep "RPC Function"
+
+  # Deberías ver algo como:
+  # INFO:     - RPC Function: match_ec0241_gemi_test
+
+  Si ves match_ec1121_gemi_mantenimiento_mecanico_automotriz, significa que NO se recargó
+  el .env.
+
+-----
 
 ### 4\. How to Check Logs and Update
 

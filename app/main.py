@@ -175,6 +175,7 @@ async def initialize_query_engine():
         embed_dim = int(os.getenv("EMBEDDING_DIMENSIONS", "3072"))
         match_threshold = float(os.getenv("MATCH_THRESHOLD", "0.5"))
         similarity_top_k = int(os.getenv("SIMILARITY_TOP_K", "3"))
+        logger.info(f"🔧 Working with function: {rpc_function}")
 
         if not supabase_url or not supabase_key:
             logger.error("❌ SUPABASE_URL o SUPABASE_SERVICE_ROLE_KEY no están configuradas.")
@@ -377,14 +378,20 @@ async def chat_endpoint(request: QueryRequest):
 
     try:
         # Realizar la consulta
+        logger.info(f"🔍 Iniciando búsqueda vectorial y generación de respuesta...")
         response = query_engine.query(request.question)
+        logger.info(f"✅ Query ejecutado exitosamente")
 
         # Extraer la respuesta
         answer = str(response)
 
         # Extraer fuentes si están disponibles
         sources = []
+        source_count = 0
         if hasattr(response, 'source_nodes'):
+            source_count = len(response.source_nodes)
+            logger.info(f"📚 Source nodes encontrados: {source_count}")
+
             for node in response.source_nodes:
                 if hasattr(node, 'node') and hasattr(node.node, 'metadata'):
                     metadata = node.node.metadata
@@ -394,9 +401,22 @@ async def chat_endpoint(request: QueryRequest):
         # Eliminar duplicados de fuentes
         sources = list(set(sources)) if sources else None
 
+        # Validar si la base de datos está vacía
+        if source_count == 0:
+            logger.warning(f"⚠️  Base de datos vacía: No se encontraron documentos relevantes")
+            logger.warning(f"   La respuesta de Gemini puede ser generada sin contexto del curso")
+            # Agregar nota a la respuesta para el usuario
+            answer = (
+                f"{answer}\n\n"
+                "**Nota**: La base de conocimiento está actualmente vacía. "
+                "Esta respuesta fue generada sin contexto específico del curso."
+            )
+
         logger.info(f"✅ Respuesta generada exitosamente.")
         if sources:
             logger.info(f"📚 Fuentes utilizadas: {sources}")
+        else:
+            logger.info(f"📚 Sin fuentes disponibles (base de datos vacía)")
 
         return QueryResponse(answer=answer, sources=sources)
 

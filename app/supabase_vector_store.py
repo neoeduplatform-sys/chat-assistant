@@ -264,6 +264,11 @@ class SupabaseVectorStore(BasePydanticVectorStore):
         # URL para llamar a la función RPC
         url = f"{self.supabase_url}/rest/v1/rpc/{self.rpc_function_name}"
 
+        # Log INFO para debugging
+        logger.info(f"🔍 Calling Supabase RPC: {self.rpc_function_name}")
+        logger.info(f"   URL: {url}")
+        logger.info(f"   Parameters: match_count={match_count}, threshold={self.match_threshold}")
+
         try:
             # Llamar a la función RPC de Supabase usando httpx
             response = self._client.post(url, json=rpc_params)
@@ -271,8 +276,11 @@ class SupabaseVectorStore(BasePydanticVectorStore):
 
             data = response.json()
 
+            # Log de resultados obtenidos
+            logger.info(f"📊 RPC Response: {len(data) if data else 0} results returned from Supabase")
+
             if not data:
-                logger.warning("No se encontraron resultados para la búsqueda")
+                logger.warning("⚠️  No se encontraron resultados para la búsqueda")
                 return VectorStoreQueryResult(nodes=[], similarities=[], ids=[])
 
             # Procesar resultados
@@ -293,6 +301,9 @@ class SupabaseVectorStore(BasePydanticVectorStore):
                 ids.append(str(row.get("id", "")))
 
             logger.info(f"✅ Búsqueda completada: {len(nodes)} resultados encontrados")
+            if nodes:
+                first_metadata = nodes[0].metadata
+                logger.info(f"   Primera fuente: {first_metadata.get('title', 'N/A')} (similarity: {similarities[0]:.3f})")
 
             return VectorStoreQueryResult(
                 nodes=nodes,
