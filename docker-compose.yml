@@ -19,6 +19,11 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
     restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
     networks:
       - chatbot_network
 
@@ -38,6 +43,11 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
     restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
     depends_on:
       - fastapi_app
     networks:
