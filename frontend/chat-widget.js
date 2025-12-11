@@ -29,6 +29,7 @@
     position: window.CHATBOT_POSITION || 'bottom-right', // bottom-right, bottom-left
     primaryColor: window.CHATBOT_PRIMARY_COLOR || '#4F46E5',
     accentColor: window.CHATBOT_ACCENT_COLOR || '#6366F1',
+    columnWidth: window.CHATBOT_COLUMN_WIDTH || '40%', // Ancho de la columna cuando está abierta
   };
 
   // ========================================================================
@@ -42,6 +43,84 @@
       bottom: 20px;
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
       z-index: 9999;
+    }
+
+    .chatbot-column-container {
+      width: 100%;
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    }
+
+    /* Estilos para la columna del chat cuando se integra en otro sitio */
+    #chat-column,
+    .chat-column {
+      width: 0;
+      overflow: hidden;
+      transition: width 0.3s ease;
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+      align-self: stretch;
+      min-height: 0;
+    }
+
+    #chat-column.open,
+    .chat-column.open {
+      width: ${CONFIG.columnWidth};
+      border-left: 1px solid #E5E7EB;
+    }
+
+    /* Asegurar que el contenedor padre tenga altura definida */
+    .content-card.with-chat,
+    [data-chat-container] {
+      position: relative;
+      display: flex;
+      gap: 20px;
+      min-height: 600px;
+      align-items: stretch;
+      height: 100%;
+    }
+
+    .content-card-main,
+    [data-chat-main] {
+      flex: 1;
+      transition: width 0.3s ease;
+      min-width: 0;
+    }
+
+    /* Botón flotante para abrir el chat */
+    #chat-toggle-floating,
+    .chat-toggle-floating {
+      position: fixed;
+      right: 20px;
+      bottom: 20px;
+      width: 60px;
+      height: 60px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, ${CONFIG.primaryColor} 0%, ${CONFIG.accentColor} 100%);
+      border: none;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: transform 0.3s ease, box-shadow 0.3s ease;
+      z-index: 9999;
+    }
+
+    #chat-toggle-floating:hover,
+    .chat-toggle-floating:hover {
+      transform: scale(1.1);
+      box-shadow: 0 6px 16px rgba(0, 0, 0, 0.2);
+    }
+
+    #chat-toggle-floating svg,
+    .chat-toggle-floating svg {
+      width: 28px;
+      height: 28px;
+      fill: white;
     }
 
     .chatbot-toggle-button {
@@ -82,6 +161,28 @@
       flex-direction: column;
       overflow: hidden;
       animation: slideUp 0.3s ease;
+    }
+
+    .chatbot-window.column-mode {
+      position: relative;
+      bottom: auto;
+      right: auto;
+      left: auto;
+      width: 100%;
+      height: 100%;
+      min-height: 0;
+      border-radius: 0;
+      box-shadow: none;
+      display: flex;
+      flex-direction: column;
+      animation: none;
+      overflow: hidden;
+      flex: 1;
+    }
+
+    .chatbot-window.column-mode .chatbot-messages {
+      flex: 1;
+      overflow-y: auto;
     }
 
     @keyframes slideUp {
@@ -307,7 +408,7 @@
   // HTML TEMPLATE
   // ========================================================================
 
-  const template = `
+  const templateFloating = `
     <div class="chatbot-widget-container">
       <button class="chatbot-toggle-button" id="chatbot-toggle">
         <svg viewBox="0 0 24 24">
@@ -331,7 +432,7 @@
         <div class="chatbot-messages" id="chatbot-messages">
           <div class="chatbot-message bot">
             <div class="chatbot-message-bubble">
-              ¡Hola! Soy tu asistente del curso. Puedo ayudarte con preguntas sobre el contenido. ¿En qué puedo ayudarte hoy?
+              ¡Hola! Soy tu asistente del curso prueba. Puedo ayudarte con preguntas sobre el contenido. ¿En qué puedo ayudarte hoy?
             </div>
           </div>
         </div>
@@ -353,6 +454,44 @@
     </div>
   `;
 
+  const templateColumn = `
+    <div class="chatbot-window column-mode" id="chatbot-window">
+      <div class="chatbot-header">
+        <div class="chatbot-header-content">
+          <h3>${CONFIG.title}</h3>
+          <p>${CONFIG.subtitle}</p>
+        </div>
+        <button class="chatbot-close-button" id="chatbot-close">
+          <svg viewBox="0 0 24 24">
+            <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
+          </svg>
+        </button>
+      </div>
+
+      <div class="chatbot-messages" id="chatbot-messages">
+        <div class="chatbot-message bot">
+          <div class="chatbot-message-bubble">
+            ¡Hola! Soy tu asistente del curso prueba. Puedo ayudarte con preguntas sobre el contenido. ¿En qué puedo ayudarte hoy?
+          </div>
+        </div>
+      </div>
+
+      <div class="chatbot-input-container">
+        <input
+          type="text"
+          class="chatbot-input"
+          id="chatbot-input"
+          placeholder="${CONFIG.placeholder}"
+        />
+        <button class="chatbot-send-button" id="chatbot-send">
+          <svg viewBox="0 0 24 24">
+            <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+  `;
+
   // ========================================================================
   // FUNCIONALIDAD
   // ========================================================================
@@ -370,20 +509,33 @@
       styleElement.textContent = styles;
       document.head.appendChild(styleElement);
 
-      // Inyectar HTML
-      const container = document.createElement('div');
-      container.innerHTML = template;
-      document.body.appendChild(container.firstElementChild);
+      // Buscar si existe la columna del chat
+      const chatColumn = document.getElementById('chat-column');
+      
+      if (chatColumn) {
+        // Modo columna: inyectar en la columna
+        chatColumn.innerHTML = templateColumn;
+        this.isColumnMode = true;
+      } else {
+        // Modo flotante: inyectar en el body
+        const container = document.createElement('div');
+        container.innerHTML = templateFloating;
+        document.body.appendChild(container.firstElementChild);
+        this.isColumnMode = false;
+      }
 
       // Obtener elementos
       this.elements = {
-        toggle: document.getElementById('chatbot-toggle'),
+        toggle: document.getElementById('chatbot-toggle') || document.getElementById('chat-toggle-floating'),
         window: document.getElementById('chatbot-window'),
         close: document.getElementById('chatbot-close'),
         messages: document.getElementById('chatbot-messages'),
         input: document.getElementById('chatbot-input'),
         send: document.getElementById('chatbot-send'),
       };
+
+      // Guardar referencia a la columna si existe
+      this.chatColumn = chatColumn;
 
       // Configurar event listeners
       this.setupEventListeners();
@@ -403,16 +555,34 @@
 
     toggleWindow() {
       this.isOpen = !this.isOpen;
-      this.elements.window.classList.toggle('open', this.isOpen);
-
-      if (this.isOpen) {
-        this.elements.input.focus();
+      
+      if (this.isColumnMode && this.chatColumn) {
+        // Modo columna: expandir/contraer la columna
+        this.chatColumn.classList.toggle('open', this.isOpen);
+        if (this.isOpen) {
+          this.elements.window.classList.add('open');
+          this.elements.input.focus();
+        }
+      } else {
+        // Modo flotante: mostrar/ocultar ventana
+        this.elements.window.classList.toggle('open', this.isOpen);
+        if (this.isOpen) {
+          this.elements.input.focus();
+        }
       }
     }
 
     closeWindow() {
       this.isOpen = false;
-      this.elements.window.classList.remove('open');
+      
+      if (this.isColumnMode && this.chatColumn) {
+        // Modo columna: contraer la columna
+        this.chatColumn.classList.remove('open');
+        this.elements.window.classList.remove('open');
+      } else {
+        // Modo flotante: ocultar ventana
+        this.elements.window.classList.remove('open');
+      }
     }
 
     addMessage(text, isUser = false, sources = null) {

@@ -53,6 +53,7 @@
             margin-bottom: 30px;
         }
 
+
         .content-card h2 {
             color: #4F46E5;
             margin-bottom: 20px;
@@ -171,6 +172,7 @@
         window.CHATBOT_PLACEHOLDER = 'Escribe tu pregunta aquí...';
         window.CHATBOT_PRIMARY_COLOR = '#4F46E5';
         window.CHATBOT_ACCENT_COLOR = '#6366F1';
+        window.CHATBOT_COURSE_ID = 'ec1530_mantenimiento_electromecanico';
     </script>
 
     <!-- Widget del chatbot -->
@@ -183,13 +185,14 @@
             <p>Tu asistente inteligente para el aprendizaje</p>
         </header>
 
-        <div class="content-card">
-            <h2>¡Bienvenido al Curso!</h2>
-            <p>
-                Este es un ejemplo de cómo integrar el chatbot educativo en tu sitio web.
-                El chatbot está <span class="highlight">siempre disponible</span> en la esquina
-                inferior derecha de la pantalla para responder tus preguntas sobre el contenido del curso.
-            </p>
+        <div class="content-card with-chat">
+            <div class="content-card-main">
+                <h2>¡Bienvenido al Curso!</h2>
+                <p>
+                    Este es un ejemplo de cómo integrar el chatbot educativo en tu sitio web.
+                    El chatbot está <span class="highlight">siempre disponible</span> en la esquina
+                    inferior derecha de la pantalla para responder tus preguntas sobre el contenido del curso.
+                </p>
 
             <h3>¿Cómo funciona?</h3>
             <p>
@@ -239,7 +242,20 @@
                 <li><strong>Personalizable:</strong> Colores, textos y posición configurables</li>
                 <li><strong>Fácil de integrar:</strong> Solo necesitas incluir un script</li>
             </ul>
+            </div>
+            
+            <!-- Columna del chat (inicialmente oculta) -->
+            <div class="chat-column" id="chat-column">
+                <!-- El widget se inyectará aquí -->
+            </div>
         </div>
+        
+        <!-- Botón flotante para abrir el chat -->
+        <button class="chat-toggle-floating" id="chat-toggle-floating">
+            <svg viewBox="0 0 24 24">
+                <path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H6l-2 2V4h16v12z"/>
+            </svg>
+        </button>
 
         <div class="cta-box">
             <h3>Prueba el Chatbot Ahora</h3>
@@ -252,23 +268,70 @@
         <div class="content-card">
             <h2>Integración en tu Sitio</h2>
             <p>
-                Integrar el chatbot en tu sitio web es muy sencillo. Solo necesitas agregar
-                estas líneas en tu HTML:
+                Para integrar el chatbot en otro sitio, sigue estos pasos:
             </p>
 
+            <h3>Paso 1: Copiar el archivo</h3>
+            <p>
+                Copia el archivo <code>frontend/chat-widget.js</code> a tu proyecto y colócalo en una carpeta accesible (ej: <code>js/</code> o <code>assets/</code>).
+            </p>
+
+            <h3>Paso 2: Elegir el modo de integración</h3>
+            
+            <h4>Opción A: Modo Flotante (Botón en esquina)</h4>
+            <p>El chat aparecerá como un botón flotante en la esquina inferior derecha:</p>
             <pre style="background: #F3F4F6; padding: 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0;">
 <code>&lt;!-- Configuración (opcional) --&gt;
 &lt;script&gt;
   window.CHATBOT_API_URL = 'http://localhost:8080/api/chat';
   window.CHATBOT_TITLE = 'Asistente del Curso';
+  window.CHATBOT_SUBTITLE = 'Pregúntame sobre el contenido';
+  window.CHATBOT_PRIMARY_COLOR = '#4F46E5';
 &lt;/script&gt;
 
 &lt;!-- Widget del chatbot --&gt;
-&lt;script src="chat-widget.js"&gt;&lt;/script&gt;</code>
+&lt;script src="ruta/a/chat-widget.js"&gt;&lt;/script&gt;</code>
             </pre>
 
+            <h4>Opción B: Modo Columna (Integrado en la página)</h4>
+            <p>El chat se integra como una columna lateral que se expande/contrae:</p>
+            <pre style="background: #F3F4F6; padding: 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0;">
+<code>&lt;!-- Configuración --&gt;
+&lt;script&gt;
+  window.CHATBOT_API_URL = 'http://localhost:8080/api/chat';
+  window.CHATBOT_TITLE = 'Asistente del Curso';
+  window.CHATBOT_COLUMN_WIDTH = '40%'; // Ancho de la columna (opcional)
+&lt;/script&gt;
+
+&lt;!-- Estructura HTML --&gt;
+&lt;div data-chat-container style="display: flex; min-height: 600px;"&gt;
+  &lt;div data-chat-main&gt;
+    &lt;!-- Tu contenido principal aquí --&gt;
+  &lt;/div&gt;
+  
+  &lt;!-- Columna del chat --&gt;
+  &lt;div id="chat-column"&gt;&lt;/div&gt;
+&lt;/div&gt;
+
+&lt;!-- Botón flotante para abrir el chat --&gt;
+&lt;button id="chat-toggle-floating"&gt;
+  &lt;svg viewBox="0 0 24 24"&gt;
+    &lt;path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H6l-2 2V4h16v12z"/&gt;
+  &lt;/svg&gt;
+&lt;/button&gt;
+
+&lt;!-- Widget del chatbot --&gt;
+&lt;script src="ruta/a/chat-widget.js"&gt;&lt;/script&gt;</code>
+            </pre>
+
+            <h3>Paso 3: Configurar la URL de la API</h3>
             <p>
-                ¡Y eso es todo! El chatbot aparecerá automáticamente en tu página.
+                Asegúrate de que <code>CHATBOT_API_URL</code> apunte a tu servidor de la API. 
+                Si ambos están en localhost, usa <code>http://localhost:8080/api/chat</code>.
+            </p>
+
+            <p>
+                <strong>¡Listo!</strong> El chatbot funcionará automáticamente. Todos los estilos y funcionalidades están incluidos en el widget.
             </p>
         </div>
 

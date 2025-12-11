@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sitio Dummy - Chat Integrado</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        header {
+            background: white;
+            padding: 30px;
+            border-radius: 12px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+        }
+
+        header h1 {
+            color: #4F46E5;
+            font-size: 2.5rem;
+            margin-bottom: 10px;
+        }
+
+        header p {
+            color: #6B7280;
+            font-size: 1.1rem;
+        }
+
+        /* Contenedor principal con chat integrado */
+        .main-content {
+            background: white;
+            border-radius: 12px;
+            padding: 40px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+            min-height: 600px;
+        }
+
+        .content-section h2 {
+            color: #1F2937;
+            font-size: 2rem;
+            margin-bottom: 20px;
+        }
+
+        .content-section p {
+            color: #4B5563;
+            line-height: 1.8;
+            margin-bottom: 20px;
+            font-size: 1.1rem;
+        }
+
+        .content-section ul {
+            margin-left: 30px;
+            margin-bottom: 20px;
+            color: #4B5563;
+        }
+
+        .content-section li {
+            margin-bottom: 10px;
+            line-height: 1.6;
+        }
+
+        .highlight {
+            background: rgba(79, 70, 229, 0.1);
+            padding: 2px 8px;
+            border-radius: 4px;
+            color: #4F46E5;
+            font-weight: 600;
+        }
+
+        .info-box {
+            background: #F3F4F6;
+            padding: 20px;
+            border-radius: 8px;
+            margin: 20px 0;
+            border-left: 4px solid #4F46E5;
+        }
+
+        .info-box h3 {
+            color: #1F2937;
+            margin-bottom: 10px;
+        }
+
+        .info-box p {
+            color: #6B7280;
+            margin: 0;
+        }
+    </style>
+
+    <!-- Configuración del chatbot -->
+    <script>
+        // URL base del servidor de la API (ajusta según tu entorno)
+        // Si tu sitio está en otro dominio, cambia esta URL al dominio de tu servidor
+        window.CHATBOT_SERVER_URL = 'http://localhost:8080';
+        
+        window.CHATBOT_API_URL = window.CHATBOT_SERVER_URL + '/api/chat';
+        window.CHATBOT_TITLE = 'Asistente Virtual';
+        window.CHATBOT_SUBTITLE = '¿En qué puedo ayudarte?';
+        window.CHATBOT_PLACEHOLDER = 'Escribe tu pregunta aquí...';
+        window.CHATBOT_PRIMARY_COLOR = '#4F46E5';
+        window.CHATBOT_ACCENT_COLOR = '#6366F1';
+        window.CHATBOT_COLUMN_WIDTH = '40%';
+    </script>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🚀 Sitio Dummy de Prueba</h1>
+            <p>Ejemplo de integración del chatbot en modo columna</p>
+        </header>
+
+        <!-- Contenedor principal con estructura para el chat -->
+        <div data-chat-container class="main-content" style="display: flex; gap: 20px; min-height: 600px;">
+            <!-- Contenido principal -->
+            <div data-chat-main class="content-section" style="flex: 1;">
+                <h2>Bienvenido al Sitio de Prueba</h2>
+                <p>
+                    Este es un sitio dummy para demostrar la integración del chatbot en modo columna.
+                    El chat está integrado en una columna lateral que se puede expandir y contraer.
+                </p>
+
+                <div class="info-box">
+                    <h3>💡 Características del Chat</h3>
+                    <p>
+                        El chatbot está configurado en modo columna. Haz clic en el botón flotante
+                        en la esquina inferior derecha para abrir/cerrar el chat.
+                    </p>
+                </div>
+
+                <h2>Contenido de Ejemplo</h2>
+                <p>
+                    Este es contenido de ejemplo para llenar el espacio. Puedes agregar cualquier
+                    contenido aquí y el chat se adaptará automáticamente.
+                </p>
+
+                <h2>Características</h2>
+                <ul>
+                    <li><strong>Modo Columna:</strong> El chat se integra como una columna lateral</li>
+                    <li><strong>Altura Adaptable:</strong> El chat ocupa el 100% de la altura del contenedor</li>
+                    <li><strong>Ancho Configurable:</strong> Actualmente configurado al 40% del ancho</li>
+                    <li><strong>Responsive:</strong> Se adapta a diferentes tamaños de pantalla</li>
+                    <li><strong>Sin Dependencias:</strong> Todo está incluido en el widget</li>
+                </ul>
+
+                <h2>Instrucciones</h2>
+                <p>
+                    Para probar el chat:
+                </p>
+                <ol style="margin-left: 30px; color: #4B5563;">
+                    <li>Haz clic en el botón flotante en la esquina inferior derecha</li>
+                    <li>La columna del chat se expandirá mostrando el 40% del ancho</li>
+                    <li>Escribe una pregunta en el campo de texto</li>
+                    <li>Presiona Enter o haz clic en el botón de enviar</li>
+                    <li>El chat se conectará a la API en <span class="highlight">http://localhost:8080/api/chat</span></li>
+                </ol>
+
+                <div class="info-box">
+                    <h3>🔧 Configuración</h3>
+                    <p>
+                        La configuración del chat está en el <code>&lt;head&gt;</code> de este archivo.
+                        Puedes modificar colores, textos y el ancho de la columna desde ahí.
+                    </p>
+                </div>
+
+                <h2>Más Contenido</h2>
+                <p>
+                    Este párrafo es solo para demostrar cómo el contenido principal se ajusta
+                    cuando el chat está abierto. El chat no interfiere con el contenido,
+                    simplemente comparte el espacio de manera elegante.
+                </p>
+            </div>
+
+            <!-- Columna del chat (inicialmente oculta) -->
+            <div id="chat-column">
+                <!-- El widget se inyectará aquí automáticamente -->
+            </div>
+        </div>
+
+        <!-- Botón flotante para abrir el chat -->
+        <button id="chat-toggle-floating">
+            <svg viewBox="0 0 24 24">
+                <path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H6l-2 2V4h16v12z"/>
+            </svg>
+        </button>
+    </div>
+
+    <!-- Widget del chatbot -->
+    <!-- IMPORTANTE: Usa la URL absoluta del servidor donde está corriendo la API -->
+    <!-- Si tu sitio está en otro dominio, cambia esta URL al dominio de tu servidor -->
+    <script>
+        // Cargar el widget desde el servidor de la API
+        const script = document.createElement('script');
+        script.src = (window.CHATBOT_SERVER_URL || 'http://localhost:8080') + '/static/chat-widget.js';
+        document.body.appendChild(script);
+    </script>
+</body>
+</html>
