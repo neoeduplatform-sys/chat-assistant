@@ -165,7 +165,10 @@
     <!-- Configuración del widget -->
     <script>
         // Configuración personalizada del chatbot (opcional)
-        window.CHATBOT_API_URL = 'https://assistant.neoedu.mx/api/chat';
+        // Misma origen = sin CORS al servir desde FastAPI (localhost o dominio propio).
+        // Para probar contra otro host (p. ej. producción), usa la URL absoluta y
+        // configura CORS en ese servidor para tu origen.
+        window.CHATBOT_API_URL = '/api/chat';
         window.CHATBOT_TITLE = 'Asistente del Curso';
         window.CHATBOT_SUBTITLE = 'Pregúntame sobre el contenido';
         window.CHATBOT_PLACEHOLDER = 'Escribe tu pregunta aquí...';

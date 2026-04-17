@@ -10,6 +10,8 @@ import logging
 import httpx
 from typing import List, Optional, Any
 
+from pydantic import ConfigDict, PrivateAttr
+
 from llama_index.core.vector_stores.types import (
     BasePydanticVectorStore,
     VectorStoreQuery,
@@ -38,13 +40,10 @@ class SupabaseVectorStore(BasePydanticVectorStore):
     match_threshold: float = 0.5
     stores_text: bool = True  # Campo requerido por BasePydanticVectorStore
     is_embedding_query: bool = True  # Campo requerido por BasePydanticVectorStore
-    _client: Optional[httpx.Client] = None
-    _headers: Optional[dict] = None
 
-    class Config:
-        """Configuración de Pydantic."""
-        arbitrary_types_allowed = True  # Permitir tipos arbitrarios como httpx.Client
-        underscore_attrs_are_private = True  # Los atributos con _ son privados
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+    _client: Optional[httpx.Client] = PrivateAttr(default=None)
+    _headers: Optional[dict] = PrivateAttr(default=None)
 
     def __init__(
         self,

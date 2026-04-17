@@ -26,6 +26,7 @@ from llama_index.embeddings.google_genai import GoogleGenAIEmbedding
 
 from app.supabase_vector_store import SupabaseVectorStore
 from app.course_config import get_course_config_service
+from app.cohere_rerank import build_cohere_rerank_postprocessors, effective_similarity_top_k
 from app.models import (
     ChatRequest,
     ChatResponse,
@@ -243,10 +244,14 @@ async def initialize_query_engine():
             "Respuesta en español:"
         )
 
+        rerank_postprocessors = build_cohere_rerank_postprocessors()
+        logger.info("Rerank active: %s", bool(rerank_postprocessors))
+
         query_engine = index.as_query_engine(
             streaming=False,
-            similarity_top_k=similarity_top_k,
+            similarity_top_k=effective_similarity_top_k(),
             text_qa_template=qa_prompt_template,
+            node_postprocessors=rerank_postprocessors,
         )
 
         logger.info("✅ Motor de consulta inicializado correctamente.")
@@ -436,10 +441,14 @@ async def chat_endpoint(request: ChatRequest):
             "Respuesta en español:"
         )
 
+        rerank_postprocessors = build_cohere_rerank_postprocessors()
+        logger.info("Rerank active for course %s: %s", request.course_id, bool(rerank_postprocessors))
+
         course_query_engine = index.as_query_engine(
             streaming=False,
-            similarity_top_k=similarity_top_k,
+            similarity_top_k=effective_similarity_top_k(),
             text_qa_template=qa_prompt_template,
+            node_postprocessors=rerank_postprocessors,
         )
 
         # 5. Realizar la consulta
