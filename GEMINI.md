@@ -10,7 +10,7 @@ The core functionality revolves around:
 *   **Advanced AI:** Utilizing Google Gemini (1.5 Pro / 2.5 Flash) for powerful language models.
 *   **RAG Architecture:** Grounding responses in specific course documents.
 *   **Semantic Search:** Automatically finding relevant information.
-*   **Vector Database:** Employing Supabase with `pgvector` for storing and querying vector embeddings of documents. (Note: While `README.md` mentions ChromaDB, the Python implementation primarily uses Supabase for vector storage and RPC functions.)
+*   **Vector Database:** Employing Supabase (leveraging `pgvector`) as the primary **external** vector database for efficient vector storage and multi-course management. Connection details are configured via environment variables. (Note: While `README.md` and other documentation might contain references to ChromaDB, these are either outdated or refer to an alternative configuration not actively used by the Python implementation.)
 *   **FastAPI Backend:** A fast and robust REST API.
 *   **Customizable Widget:** A dependency-free frontend chat widget.
 *   **Docker Ready:** Simplified deployment with Docker Compose.
@@ -28,8 +28,9 @@ The system follows a typical RAG architecture:
                             │                      │
                             │                      ▼
                             │              ┌─────────────┐
+                            │              ┌─────────────┐
                             │              │  Supabase   │
-                            │              │  (Vectors)  │
+                            │              │ (External)  │
                             │              └─────────────┘
                             ▼
                      ┌──────────────┐
