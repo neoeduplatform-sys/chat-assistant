@@ -214,6 +214,7 @@ El **RAG por curso** ya está en `chat_endpoint` (líneas que crean `SupabaseVec
 4. Mensajes muy largos: no se excede el presupuesto de contexto gracias al recorte por tokens en capa A.
 5. Las tablas crecen de forma acotada por política (opcional: job de archivado).
 6. Los cambios en base de datos deben crearce de forma que se apliquen incrementalmente ya que el proyecto se encuentra en producción (migraciones)
+7. Actualizaar frontend/chat-widget.js para incluir el user_id
 
 ---
 
