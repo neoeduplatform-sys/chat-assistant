@@ -213,6 +213,7 @@ El **RAG por curso** ya está en `chat_endpoint` (líneas que crean `SupabaseVec
 3. Con `user_id` ausente: comportamiento idéntico al actual (solo RAG).
 4. Mensajes muy largos: no se excede el presupuesto de contexto gracias al recorte por tokens en capa A.
 5. Las tablas crecen de forma acotada por política (opcional: job de archivado).
+6. Los cambios en base de datos deben crearce de forma que se apliquen incrementalmente ya que el proyecto se encuentra en producción (migraciones)
 
 ---
 
@@ -229,4 +230,5 @@ El **RAG por curso** ya está en `chat_endpoint` (líneas que crean `SupabaseVec
 - Request/response: `ChatRequest`, `ChatResponse` en `app/models.py`
 - RAG y vector store: `app/supabase_vector_store.py`, `app/course_config.py`
 - Arquitectura general: `CLAUDE.md`
+
 
