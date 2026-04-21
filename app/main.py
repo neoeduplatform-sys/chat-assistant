@@ -381,7 +381,12 @@ async def health_check():
 async def get_chat_history(
     user_id: str = Query(..., min_length=1, max_length=255, description="User identifier"),
     course_id: str = Query(..., min_length=1, max_length=255, description="Course identifier"),
-    limit: int = Query(500, ge=1, le=500, description="Max messages per page"),
+    limit: int = Query(
+        MAX_MESSAGES_SAFETY,
+        ge=1,
+        le=MAX_MESSAGES_SAFETY,
+        description="Max messages per page",
+    ),
     offset: int = Query(0, ge=0, description="Pagination offset"),
 ):
     """
