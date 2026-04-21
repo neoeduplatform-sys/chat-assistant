@@ -175,6 +175,18 @@
         window.CHATBOT_PRIMARY_COLOR = '#4F46E5';
         window.CHATBOT_ACCENT_COLOR = '#6366F1';
         window.CHATBOT_COURSE_ID = 'default';
+
+        (function () {
+            try {
+                var key = 'chatbot_demo_user_id';
+                var uid = localStorage.getItem(key);
+                if (!uid) {
+                    uid = 'demo-' + Math.random().toString(36).slice(2, 10) + '-' + Date.now();
+                    localStorage.setItem(key, uid);
+                }
+                window.CHATBOT_USER_ID = uid;
+            } catch (e) { /* storage disabled: memory simply won't persist */ }
+        })();
     </script>
 
     <!-- Widget del chatbot -->

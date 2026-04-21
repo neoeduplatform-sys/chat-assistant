@@ -27,6 +27,12 @@ from llama_index.embeddings.google_genai import GoogleGenAIEmbedding
 from app.supabase_vector_store import SupabaseVectorStore
 from app.course_config import get_course_config_service
 from app.cohere_rerank import build_cohere_rerank_postprocessors, effective_similarity_top_k
+from app.chat_memory_service import (
+    get_chat_memory_service,
+    summarize_conversation,
+    HISTORY_MAX_TOKENS,
+    MAX_MESSAGES_SAFETY,
+)
 from app.models import (
     ChatRequest,
     ChatResponse,
@@ -451,9 +457,55 @@ async def chat_endpoint(request: ChatRequest):
             node_postprocessors=rerank_postprocessors,
         )
 
+        # 4.5 Capas A (historial) y B (resumen) — solo si hay user_id
+        memory_ctx = None
+        if request.user_id:
+            try:
+                memory_service = get_chat_memory_service()
+                conversation_id = memory_service.resolve_conversation(
+                    request.user_id, request.course_id
+                )
+                summary = memory_service.get_summary(request.user_id, request.course_id)
+                recent = memory_service.get_recent_messages(
+                    conversation_id, limit=MAX_MESSAGES_SAFETY
+                )
+                trimmed = memory_service.trim_to_token_budget(
+                    recent, max_tokens=HISTORY_MAX_TOKENS
+                )
+                composed_query = memory_service.build_composed_query_str(
+                    summary, trimmed, request.question
+                )
+                memory_ctx = {
+                    "service": memory_service,
+                    "conversation_id": conversation_id,
+                    "summary": summary,
+                }
+                logger.info(
+                    "🧠 Memoria cargada | conv=%s | summary=%d chars | history=%d/%d msgs",
+                    conversation_id,
+                    len(summary or ""),
+                    len(trimmed),
+                    len(recent),
+                )
+            except Exception as mem_exc:
+                logger.error("⚠️  Fallo cargando memoria, usando solo RAG: %s", mem_exc, exc_info=True)
+                memory_ctx = None
+                composed_query = request.question
+        else:
+            composed_query = request.question
+
+        # 4.6 Persistir el mensaje del usuario ANTES de llamar al LLM
+        if memory_ctx is not None:
+            try:
+                memory_ctx["service"].persist_message(
+                    memory_ctx["conversation_id"], "user", request.question
+                )
+            except Exception as exc:
+                logger.error("⚠️  No se pudo guardar mensaje de usuario: %s", exc, exc_info=True)
+
         # 5. Realizar la consulta
         logger.info(f"🔍 Iniciando búsqueda vectorial y generación de respuesta...")
-        response = course_query_engine.query(request.question)
+        response = course_query_engine.query(composed_query)
         logger.info(f"✅ Query ejecutado exitosamente")
 
         # 6. Extraer la respuesta
@@ -493,6 +545,41 @@ async def chat_endpoint(request: ChatRequest):
             logger.info(f"📚 Fuentes utilizadas: {sources}")
         else:
             logger.info(f"📚 Sin fuentes disponibles (base de datos vacía)")
+
+        # 9. Persistir respuesta del asistente y refrescar resumen si toca
+        if memory_ctx is not None:
+            svc = memory_ctx["service"]
+            conv_id = memory_ctx["conversation_id"]
+            try:
+                svc.persist_message(conv_id, "assistant", answer)
+            except Exception as exc:
+                logger.error("⚠️  No se pudo guardar respuesta del asistente: %s", exc, exc_info=True)
+
+            try:
+                mem_row = svc.get_memory_row(request.user_id, request.course_id)
+                last_count = (mem_row or {}).get("message_count_at_last_summary", 0) or 0
+                total_messages = svc.count_messages(conv_id)
+                if svc.should_refresh_summary(total_messages, last_count):
+                    logger.info(
+                        "🧠 Refrescando resumen (total=%d, last=%d)",
+                        total_messages, last_count,
+                    )
+                    recent_for_summary = svc.get_recent_messages(
+                        conv_id, limit=MAX_MESSAGES_SAFETY
+                    )
+                    new_summary = summarize_conversation(
+                        memory_ctx["summary"], recent_for_summary
+                    )
+                    if new_summary and new_summary != memory_ctx["summary"]:
+                        svc.upsert_summary(
+                            request.user_id,
+                            request.course_id,
+                            new_summary,
+                            total_messages,
+                        )
+                        logger.info("🧠 Resumen actualizado (%d chars)", len(new_summary))
+            except Exception as exc:
+                logger.error("⚠️  Fallo en refresco de resumen: %s", exc, exc_info=True)
 
         return ChatResponse(
             answer=answer,
