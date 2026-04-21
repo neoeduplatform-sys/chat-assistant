@@ -46,6 +46,33 @@ class ChatResponse(BaseModel):
     user_id: Optional[str] = Field(None, description="User identifier if provided")
 
 
+class ChatHistoryMessageItem(BaseModel):
+    """Single persisted chat message for history API."""
+    id: int = Field(..., description="Database message id")
+    role: str = Field(..., description="'user' or 'assistant'")
+    content: str = Field(..., description="Message body")
+    created_at: datetime = Field(..., description="UTC timestamp")
+
+
+class ChatHistoryResponse(BaseModel):
+    """Paginated conversation history for a user within a course."""
+    conversation_id: Optional[str] = Field(
+        None,
+        description="UUID of chat_conversations row; null if no thread exists yet",
+    )
+    course_id: str = Field(..., description="Course identifier")
+    user_id: str = Field(..., description="User identifier")
+    messages: List[ChatHistoryMessageItem] = Field(default_factory=list)
+    summary: Optional[str] = Field(
+        None,
+        description="Rolling summary (layer B), if any",
+    )
+    total_count: int = Field(0, description="Total messages in this conversation")
+    limit: int = Field(..., description="Page size used for this response")
+    offset: int = Field(..., description="Pagination offset used")
+    has_more: bool = Field(False, description="True if more messages exist after this page")
+
+
 # ============================================================================
 # Course Configuration Models
 # ============================================================================

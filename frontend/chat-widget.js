@@ -16,6 +16,8 @@
  *
  *      // Opcional: Personalización
  *      window.CHATBOT_API_URL = 'http://localhost:8080/api/chat';
+ *      // Opcional: GET historial (por defecto se deduce de CHATBOT_API_URL → .../api/chat/history)
+ *      window.CHATBOT_HISTORY_URL = 'http://localhost:8080/api/chat/history';
  *      window.CHATBOT_TITLE = 'Asistente del Curso';
  *      window.CHATBOT_SUBTITLE = 'Pregúntame sobre el curso';
  *    </script>
@@ -121,8 +123,12 @@
   // CONFIGURACIÓN
   // ========================================================================
 
+  const _apiBase = String(window.CHATBOT_API_URL || 'http://localhost:8080/api/chat');
   const CONFIG = {
-    apiUrl: window.CHATBOT_API_URL || 'http://localhost:8080/api/chat',
+    apiUrl: _apiBase,
+    historyUrl:
+      window.CHATBOT_HISTORY_URL ||
+      _apiBase.replace(/\/?api\/chat\/?$/i, '') + '/api/chat/history',
     courseId: window.CHATBOT_COURSE_ID || null,  // Required: Course identifier
     userId: window.CHATBOT_USER_ID || null,       // Optional: User identifier
     title: window.CHATBOT_TITLE || 'Asistente del Curso',
@@ -601,6 +607,7 @@
     constructor() {
       this.isOpen = false;
       this.isProcessing = false;
+      this.historyPrefetchDone = false;
       this.init();
     }
 
@@ -627,6 +634,45 @@
 
       // Configurar event listeners
       this.setupEventListeners();
+      this.prefetchHistory();
+    }
+
+    /**
+     * Carga mensajes guardados (misma sesión de usuario/curso) para mostrar tras F5.
+     * Requiere CHATBOT_USER_ID; si no hay historial, se mantiene el saludo por defecto.
+     */
+    async prefetchHistory() {
+      if (!CONFIG.userId || !CONFIG.courseId || !CONFIG.historyUrl || this.historyPrefetchDone) {
+        return;
+      }
+      try {
+        const params = new URLSearchParams({
+          user_id: CONFIG.userId,
+          course_id: CONFIG.courseId,
+          limit: '500',
+          offset: '0',
+        });
+        const res = await fetch(`${CONFIG.historyUrl}?${params.toString()}`, {
+          method: 'GET',
+          headers: { Accept: 'application/json' },
+        });
+        if (!res.ok) {
+          return;
+        }
+        const data = await res.json();
+        this.historyPrefetchDone = true;
+        if (!data.messages || data.messages.length === 0) {
+          return;
+        }
+        this.elements.messages.innerHTML = '';
+        data.messages.forEach(function (m) {
+          var isUser = m.role === 'user';
+          this.addMessage(m.content, isUser, null);
+        }, this);
+        this.scrollToBottom();
+      } catch (err) {
+        console.warn('No se pudo cargar el historial del chat:', err);
+      }
     }
 
     setupEventListeners() {

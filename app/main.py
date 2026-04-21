@@ -11,7 +11,7 @@ import logging
 from typing import Optional, List
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, status
+from fastapi import FastAPI, HTTPException, status, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -36,6 +36,8 @@ from app.chat_memory_service import (
 from app.models import (
     ChatRequest,
     ChatResponse,
+    ChatHistoryResponse,
+    ChatHistoryMessageItem,
     CourseConfigCreate,
     CourseConfigUpdate,
     CourseConfigResponse,
@@ -336,6 +338,7 @@ async def root():
             "version": "1.0.0",
             "endpoints": {
                 "chat": "/api/chat",
+                "chat_history": "/api/chat/history",
                 "health": "/health",
                 "docs": "/docs"
             },
@@ -372,6 +375,83 @@ async def health_check():
             message=f"Error al verificar el estado: {str(e)}",
             model=os.getenv("GEMINI_MODEL", "unknown")
         )
+
+
+@app.get("/api/chat/history", response_model=ChatHistoryResponse)
+async def get_chat_history(
+    user_id: str = Query(..., min_length=1, max_length=255, description="User identifier"),
+    course_id: str = Query(..., min_length=1, max_length=255, description="Course identifier"),
+    limit: int = Query(500, ge=1, le=500, description="Max messages per page"),
+    offset: int = Query(0, ge=0, description="Pagination offset"),
+):
+    """
+    Historial persistido para un ``user_id`` y ``course_id`` (capas A y B).
+
+    No crea una conversación nueva: si todavía no existe hilo en base de datos,
+    devuelve mensajes vacíos y ``conversation_id`` nulo.
+    """
+    uid = user_id.strip()
+    cid = course_id.strip()
+
+    course_service = get_course_config_service()
+    course_config = course_service.get_course_config(cid, use_cache=True)
+    if not course_config:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Course '{cid}' not found or inactive.",
+        )
+
+    try:
+        svc = get_chat_memory_service()
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Chat memory storage is not configured (Supabase credentials missing).",
+        )
+
+    conversation_id = svc.find_conversation_id(uid, cid)
+    if not conversation_id:
+        return ChatHistoryResponse(
+            conversation_id=None,
+            course_id=cid,
+            user_id=uid,
+            messages=[],
+            summary=None,
+            total_count=0,
+            limit=limit,
+            offset=offset,
+            has_more=False,
+        )
+
+    total_count = svc.count_messages(conversation_id)
+    rows = svc.list_messages_chronological(conversation_id, limit=limit, offset=offset)
+    summary_raw = svc.get_summary(uid, cid)
+    summary_out = summary_raw.strip() if summary_raw else None
+
+    messages_out: List[ChatHistoryMessageItem] = []
+    for row in rows:
+        messages_out.append(
+            ChatHistoryMessageItem(
+                id=int(row["id"]),
+                role=row["role"],
+                content=row["content"],
+                created_at=row["created_at"],
+            )
+        )
+
+    has_more = offset + len(messages_out) < total_count
+
+    return ChatHistoryResponse(
+        conversation_id=conversation_id,
+        course_id=cid,
+        user_id=uid,
+        messages=messages_out,
+        summary=summary_out if summary_out else None,
+        total_count=total_count,
+        limit=limit,
+        offset=offset,
+        has_more=has_more,
+    )
 
 
 @app.post("/api/chat", response_model=ChatResponse)

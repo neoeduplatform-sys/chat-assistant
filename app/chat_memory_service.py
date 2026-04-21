@@ -85,6 +85,20 @@ class ChatMemoryService:
             raise RuntimeError("get_or_create_conversation returned empty set")
         return data[0]["id"]
 
+    def find_conversation_id(self, user_id: str, course_id: str) -> Optional[str]:
+        """Return conversation UUID if it exists; do not create (for GET history)."""
+        url = f"{self._rest}/chat_conversations"
+        params = {
+            "user_id": f"eq.{user_id}",
+            "course_id": f"eq.{course_id}",
+            "select": "id",
+            "limit": "1",
+        }
+        r = self.client.get(url, params=params)
+        r.raise_for_status()
+        rows = r.json() or []
+        return rows[0]["id"] if rows else None
+
     # -------- messages (layer A) --------------------------------------------
 
     def get_recent_messages(
@@ -105,6 +119,26 @@ class ChatMemoryService:
         rows = r.json() or []
         rows.reverse()
         return [{"role": row["role"], "content": row["content"]} for row in rows]
+
+    def list_messages_chronological(
+        self,
+        conversation_id: str,
+        *,
+        limit: int = 500,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """Return messages in chronological order (oldest first) with ids and timestamps."""
+        url = f"{self._rest}/chat_messages"
+        params = {
+            "conversation_id": f"eq.{conversation_id}",
+            "select": "id,role,content,created_at",
+            "order": "created_at.asc",
+            "limit": str(max(1, min(limit, 500))),
+            "offset": str(max(0, offset)),
+        }
+        r = self.client.get(url, params=params)
+        r.raise_for_status()
+        return r.json() or []
 
     def persist_message(self, conversation_id: str, role: str, content: str) -> None:
         if role not in ("user", "assistant"):
