@@ -608,6 +608,8 @@
       this.isOpen = false;
       this.isProcessing = false;
       this.historyPrefetchDone = false;
+      // Requirement: always keep the view pinned to the latest message.
+      this._autoScrollEnabled = true;
       this.init();
     }
 
@@ -669,7 +671,7 @@
           var isUser = m.role === 'user';
           this.addMessage(m.content, isUser, null);
         }, this);
-        this.scrollToBottom();
+        this.scrollToBottom(true);
       } catch (err) {
         console.warn('No se pudo cargar el historial del chat:', err);
       }
@@ -693,6 +695,7 @@
 
       if (this.isOpen) {
         this.elements.input.focus();
+        this.scrollToBottom(true);
       }
     }
 
@@ -726,7 +729,7 @@
       }
 
       this.elements.messages.appendChild(messageDiv);
-      this.scrollToBottom();
+      this.scrollToBottom(true);
     }
 
     showTyping() {
@@ -741,7 +744,7 @@
         </div>
       `;
       this.elements.messages.appendChild(typingDiv);
-      this.scrollToBottom();
+      this.scrollToBottom(true);
     }
 
     hideTyping() {
@@ -751,8 +754,28 @@
       }
     }
 
-    scrollToBottom() {
-      this.elements.messages.scrollTop = this.elements.messages.scrollHeight;
+    /**
+     * Scroll chat to bottom, robust to late layout changes (Markdown/reflow).
+     * force=true keeps the view pinned to the latest message.
+     */
+    scrollToBottom(force = false) {
+      if (!this.elements || !this.elements.messages) return;
+      if (!force && !this._autoScrollEnabled) return;
+
+      const el = this.elements.messages;
+
+      // Immediate scroll for synchronous DOM updates.
+      el.scrollTop = el.scrollHeight;
+
+      // Next frame (after layout).
+      requestAnimationFrame(() => {
+        el.scrollTop = el.scrollHeight;
+      });
+
+      // Small delayed scroll (late reflow: fonts/markdown rendering).
+      setTimeout(() => {
+        el.scrollTop = el.scrollHeight;
+      }, 60);
     }
 
     async sendMessage() {
