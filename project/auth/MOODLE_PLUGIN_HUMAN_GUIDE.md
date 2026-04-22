@@ -129,7 +129,19 @@ Hasta que el secreto no coincida byte a byte, la API responderá con error de au
 
 ---
 
-## 10. Documentos relacionados en este proyecto
+## 10. Implementación incluida en este repositorio
+
+Hay un plugin Moodle listo para copiar en tu servidor:
+
+```text
+integrations/moodle/local/chatassistant/
+```
+
+Instálalo como `{moodle_root}/local/chatassistant/` y ejecuta las notificaciones de administración. Requiere **Moodle 4.4+** (hooks de pie de página). Instrucciones breves: `integrations/moodle/README.md`.
+
+---
+
+## 11. Documentos relacionados en este proyecto
 
 | Archivo | Para qué sirve |
 |---------|----------------|

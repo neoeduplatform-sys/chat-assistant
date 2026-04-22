@@ -38,6 +38,15 @@
 (function() {
   'use strict';
 
+  // Minimal runtime marker to confirm the script executed on the page.
+  // (Useful in environments where the script loads but is blocked/crashes early.)
+  try {
+    window.__CHATBOT_WIDGET_JS_LOADED__ = (window.__CHATBOT_WIDGET_JS_LOADED__ || 0) + 1;
+    console.debug('[chat-widget] loaded', { count: window.__CHATBOT_WIDGET_JS_LOADED__ });
+  } catch (_) {
+    // ignore
+  }
+
   // ========================================================================
   // CARGAR MARKED.JS PARA MARKDOWN
   // ========================================================================
@@ -94,6 +103,10 @@
       // Sanitizar links para prevenir javascript: URLs
       const originalLink = renderer.link.bind(renderer);
       renderer.link = (href, title, text) => {
+        // marked can pass null/undefined for malformed markdown.
+        if (!href) {
+          return text;
+        }
         if (href.startsWith('javascript:') || href.startsWith('data:')) {
           return text;
         }
@@ -631,10 +644,28 @@
       this.historyPrefetchDone = false;
       // Requirement: always keep the view pinned to the latest message.
       this._autoScrollEnabled = true;
-      this.init();
+      this._initScheduled = false;
+      try {
+        this.init();
+      } catch (err) {
+        console.error('❌ Chatbot widget: init crashed.', err);
+      }
     }
 
     init() {
+      // Some platforms/themes inject this script in <head> very early.
+      // If body/head are not ready yet, retry shortly instead of crashing.
+      if (!document.body || !document.head) {
+        if (!this._initScheduled) {
+          this._initScheduled = true;
+          setTimeout(() => {
+            this._initScheduled = false;
+            this.init();
+          }, 50);
+        }
+        return;
+      }
+
       // Inyectar estilos
       const styleElement = document.createElement('style');
       styleElement.textContent = styles;
@@ -643,7 +674,12 @@
       // Inyectar HTML
       const container = document.createElement('div');
       container.innerHTML = template;
-      document.body.appendChild(container.firstElementChild);
+      const root = container.firstElementChild;
+      if (!root) {
+        console.error('❌ Chatbot widget: template produced no root element.');
+        return;
+      }
+      document.body.appendChild(root);
 
       // Obtener elementos
       this.elements = {

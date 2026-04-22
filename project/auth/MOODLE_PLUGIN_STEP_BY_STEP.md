@@ -43,6 +43,8 @@ Variables globales que el plugin debe definir **antes** de cargar `chat-widget.j
 
 Nombre ejemplo: **`local_chatassistant`** → carpeta `moodle/local/chatassistant/`.
 
+**Implementación de referencia en este repo:** `integrations/moodle/local/chatassistant/` (copiar a `{moodle}/local/chatassistant/`).
+
 ```text
 local/chatassistant/
   version.php                    # obligatorio
