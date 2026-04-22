@@ -18,9 +18,18 @@ from datetime import datetime
 # ============================================================================
 
 class ChatRequest(BaseModel):
-    """Request model for chat endpoint"""
+    """Request model for chat endpoint.
+
+    ``course_id`` y ``user_id`` son opcionales: el backend los obtiene del JWT
+    validado y, por seguridad, prioriza los valores del token por encima de los
+    enviados en el cuerpo del request.
+    """
     question: str = Field(..., min_length=1, max_length=5000, description="User's question")
-    course_id: str = Field(..., min_length=1, max_length=255, description="Course identifier")
+    course_id: Optional[str] = Field(
+        None,
+        max_length=255,
+        description="Course identifier (se ignora si el token lo provee)",
+    )
     user_id: Optional[str] = Field(None, max_length=255, description="Optional user identifier")
 
     @field_validator('question')
@@ -32,8 +41,10 @@ class ChatRequest(BaseModel):
 
     @field_validator('course_id')
     @classmethod
-    def course_id_valid(cls, v: str) -> str:
-        if not v or not v.strip():
+    def course_id_valid(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        if not v.strip():
             raise ValueError('Course ID cannot be empty')
         return v.strip()
 

@@ -38,3 +38,6 @@ python-json-logger==3.2.1
 
 # Cohere Rerank (optional, enable with COHERE_RERANK_ENABLED=true)
 llama-index-postprocessor-cohere-rerank>=0.5.0,<0.7
+
+# Autenticación JWT para el widget embebido en Moodle
+PyJWT==2.10.1

@@ -11,7 +11,13 @@
  *      // Requerido: ID del curso
  *      window.CHATBOT_COURSE_ID = 'course_123';
  *
- *      // Opcional: ID del usuario para tracking
+ *      // Requerido: JWT firmado por el servidor (Moodle/LTI). Se envía en
+ *      // la cabecera Authorization: Bearer <token> y el backend extrae de
+ *      // forma segura user_id y course_id desde el token.
+ *      window.CHATBOT_TOKEN = '<JWT>';
+ *
+ *      // Opcional: ID del usuario para tracking local (el backend ignora
+ *      // este valor y usa el sub del token).
  *      window.CHATBOT_USER_ID = 'user_456';
  *
  *      // Opcional: Personalización
@@ -25,7 +31,8 @@
  * 2. Incluye el widget:
  *    <script src="chat-widget.js"></script>
  *
- * Nota: CHATBOT_COURSE_ID es obligatorio. El widget mostrará un error si no está configurado.
+ * Nota: CHATBOT_COURSE_ID y CHATBOT_TOKEN son obligatorios. El widget
+ * mostrará un error si alguno no está configurado.
  */
 
 (function() {
@@ -131,6 +138,7 @@
       _apiBase.replace(/\/?api\/chat\/?$/i, '') + '/api/chat/history',
     courseId: window.CHATBOT_COURSE_ID || null,  // Required: Course identifier
     userId: window.CHATBOT_USER_ID || null,       // Optional: User identifier
+    token: window.CHATBOT_TOKEN || null,          // Required: JWT firmado por el servidor
     title: window.CHATBOT_TITLE || 'Asistente del Curso',
     subtitle: window.CHATBOT_SUBTITLE || 'Pregúntame sobre el curso',
     placeholder: window.CHATBOT_PLACEHOLDER || 'Escribe tu pregunta...',
@@ -144,6 +152,19 @@
     console.error('❌ CHATBOT ERROR: CHATBOT_COURSE_ID is required but not configured.');
     console.error('Please set window.CHATBOT_COURSE_ID before loading the widget.');
     console.error('Example: window.CHATBOT_COURSE_ID = "course_123";');
+  }
+
+  if (!CONFIG.token) {
+    console.error('❌ CHATBOT ERROR: CHATBOT_TOKEN is required but not configured.');
+    console.error('Please set window.CHATBOT_TOKEN (JWT firmado por el servidor) before loading the widget.');
+  }
+
+  function authHeaders(extra) {
+    const headers = Object.assign({}, extra || {});
+    if (CONFIG.token) {
+      headers['Authorization'] = 'Bearer ' + CONFIG.token;
+    }
+    return headers;
   }
 
   // ========================================================================
@@ -644,19 +665,17 @@
      * Requiere CHATBOT_USER_ID; si no hay historial, se mantiene el saludo por defecto.
      */
     async prefetchHistory() {
-      if (!CONFIG.userId || !CONFIG.courseId || !CONFIG.historyUrl || this.historyPrefetchDone) {
+      if (!CONFIG.token || !CONFIG.historyUrl || this.historyPrefetchDone) {
         return;
       }
       try {
         const params = new URLSearchParams({
-          user_id: CONFIG.userId,
-          course_id: CONFIG.courseId,
           limit: '500',
           offset: '0',
         });
         const res = await fetch(`${CONFIG.historyUrl}?${params.toString()}`, {
           method: 'GET',
-          headers: { Accept: 'application/json' },
+          headers: authHeaders({ Accept: 'application/json' }),
         });
         if (!res.ok) {
           return;
@@ -795,6 +814,15 @@
         return;
       }
 
+      if (!CONFIG.token) {
+        console.error('❌ Cannot send message: CHATBOT_TOKEN is not configured');
+        this.addMessage(
+          'Error de autenticación: falta el token de acceso. Por favor recarga la página o contacta al administrador.',
+          false
+        );
+        return;
+      }
+
       // Agregar mensaje del usuario
       this.addMessage(message, true);
       this.elements.input.value = '';
@@ -821,9 +849,7 @@
 
         const response = await fetch(CONFIG.apiUrl, {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
+          headers: authHeaders({ 'Content-Type': 'application/json' }),
           body: JSON.stringify(requestBody),
         });
 

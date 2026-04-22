@@ -11,7 +11,7 @@ import logging
 from typing import Optional, List
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, status, Query
+from fastapi import Depends, FastAPI, HTTPException, status, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -27,6 +27,7 @@ from llama_index.embeddings.google_genai import GoogleGenAIEmbedding
 from app.supabase_vector_store import SupabaseVectorStore
 from app.course_config import get_course_config_service
 from app.cohere_rerank import build_cohere_rerank_postprocessors, effective_similarity_top_k
+from app.auth import AuthenticatedUser, get_current_user
 from app.chat_memory_service import (
     get_chat_memory_service,
     summarize_conversation,
@@ -379,8 +380,6 @@ async def health_check():
 
 @app.get("/api/chat/history", response_model=ChatHistoryResponse)
 async def get_chat_history(
-    user_id: str = Query(..., min_length=1, max_length=255, description="User identifier"),
-    course_id: str = Query(..., min_length=1, max_length=255, description="Course identifier"),
     limit: int = Query(
         MAX_MESSAGES_SAFETY,
         ge=1,
@@ -388,15 +387,18 @@ async def get_chat_history(
         description="Max messages per page",
     ),
     offset: int = Query(0, ge=0, description="Pagination offset"),
+    current_user: AuthenticatedUser = Depends(get_current_user),
 ):
     """
-    Historial persistido para un ``user_id`` y ``course_id`` (capas A y B).
+    Historial persistido para el usuario autenticado (capas A y B).
 
-    No crea una conversación nueva: si todavía no existe hilo en base de datos,
-    devuelve mensajes vacíos y ``conversation_id`` nulo.
+    ``user_id`` y ``course_id`` se extraen del JWT validado: no se aceptan
+    como query params para evitar que un usuario consulte historiales ajenos.
+    Si aún no existe hilo en base de datos, devuelve mensajes vacíos y
+    ``conversation_id`` nulo.
     """
-    uid = user_id.strip()
-    cid = course_id.strip()
+    uid = current_user.user_id.strip()
+    cid = current_user.course_id.strip()
 
     course_service = get_course_config_service()
     course_config = course_service.get_course_config(cid, use_cache=True)
@@ -460,24 +462,33 @@ async def get_chat_history(
 
 
 @app.post("/api/chat", response_model=ChatResponse)
-async def chat_endpoint(request: ChatRequest):
+async def chat_endpoint(
+    request: ChatRequest,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+):
     """
     Endpoint principal del chatbot con soporte multi-curso.
 
-    Recibe una pregunta del usuario con el ID del curso y devuelve una respuesta
-    generada usando RAG (Retrieval-Augmented Generation) con el contexto del curso específico.
+    Recibe una pregunta del usuario y devuelve una respuesta generada usando
+    RAG (Retrieval-Augmented Generation) con el contexto del curso específico.
 
-    **Parámetros:**
-    - `question`: La pregunta del usuario sobre el contenido del curso
-    - `course_id`: ID del curso (requerido)
-    - `user_id`: ID del usuario (opcional, para tracking)
+    **Autenticación:** requiere ``Authorization: Bearer <JWT>``. El ``user_id``
+    y ``course_id`` se obtienen del token validado y tienen prioridad sobre
+    los valores enviados en el cuerpo del request (anti-suplantación).
 
     **Retorna:**
     - `answer`: La respuesta generada por el chatbot
     - `sources`: Lista de fuentes utilizadas (opcional)
-    - `course_id`: ID del curso usado
-    - `user_id`: ID del usuario (si se proporcionó)
+    - `course_id`: ID del curso usado (del token)
+    - `user_id`: ID del usuario (del token)
     """
+    # Priorizar IDs del token sobre los del body para evitar suplantación.
+    course_id = current_user.course_id
+    user_id = current_user.user_id
+
+    # Reemplazar los IDs del request con los del token antes de procesar.
+    request = request.model_copy(update={"course_id": course_id, "user_id": user_id})
+
     logger.info(f"📩 Pregunta recibida: {request.question} | Course: {request.course_id}")
 
     try:
