@@ -131,30 +131,87 @@ class hook_callbacks {
         }
         $widgeturl = trim((string) $widgeturl);
 
+        // Si la API sigue en localhost pero el widget es URL absoluta en producción, usar ese origen.
+        $effectiveapi = self::effective_chat_api_url($apiurl, $widgeturl);
+
         $historyconfig = get_config('local_chatassistant', 'history_url');
         $historyurl = ($historyconfig !== false && trim((string) $historyconfig) !== '')
             ? trim((string) $historyconfig)
-            : self::derive_history_url($apiurl);
+            : self::derive_history_url($effectiveapi);
 
-        // Register config first, then load script.
+        // Set globals then load widget in the same init block. Moodle often emits
+        // external requires->js() before js_init_code(), so CHATBOT_* were undefined
+        // when chat-widget.js ran; dynamic script insertion matches the legacy snippet order.
         $flags = JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP | JSON_UNESCAPED_SLASHES;
         $tokenjs = json_encode($jwt, $flags);
-        $apijs = json_encode($apiurl, $flags);
+        $apijs = json_encode($effectiveapi, $flags);
         $histjs = json_encode($historyurl, $flags);
         $coursejs = json_encode($apicourseid, $flags);
+        $widgetsrcjs = json_encode($widgeturl, $flags);
 
         $PAGE->requires->js_init_code(
+            '(function(){' .
             'window.CHATBOT_TOKEN=' . $tokenjs . ';' .
             'window.CHATBOT_API_URL=' . $apijs . ';' .
             'window.CHATBOT_HISTORY_URL=' . $histjs . ';' .
-            'window.CHATBOT_COURSE_ID=' . $coursejs . ';'
+            'window.CHATBOT_COURSE_ID=' . $coursejs . ';' .
+            'var el=document.createElement("script");' .
+            'el.src=' . $widgetsrcjs . ';' .
+            'el.async=true;' .
+            'document.head.appendChild(el);' .
+            '})();'
         );
 
-        // Load external widget script.
-        $PAGE->requires->js(new \moodle_url($widgeturl));
-
-        // No extra HTML needed when using $PAGE->requires.
         return '';
+    }
+
+    /**
+     * Origin (scheme://host[:port]) from an absolute HTTP(S) URL.
+     */
+    private static function origin_from_absolute_url(string $url): string {
+        $parts = parse_url(trim($url));
+        if (empty($parts['scheme']) || empty($parts['host'])) {
+            return '';
+        }
+        $origin = $parts['scheme'] . '://' . $parts['host'];
+        if (!empty($parts['port'])) {
+            $origin .= ':' . (int) $parts['port'];
+        }
+        return $origin;
+    }
+
+    /**
+     * True if URL host is localhost / 127.0.0.1.
+     */
+    private static function url_host_is_localhost_like(string $url): bool {
+        $host = parse_url(trim($url), PHP_URL_HOST);
+        if ($host === null || $host === '') {
+            return false;
+        }
+        $h = strtolower((string) $host);
+        return ($h === 'localhost' || $h === '127.0.0.1');
+    }
+
+    /**
+     * Si "Chat API URL" sigue en localhost pero "Widget script URL" es absoluta en otro host,
+     * usar ese origen + /api/chat (mismo despliegue que sirve el JS estático).
+     */
+    private static function effective_chat_api_url(string $apiurl, string $widgeturl): string {
+        $apiurl = trim($apiurl);
+        if ($apiurl === '') {
+            return '';
+        }
+        if (!self::url_host_is_localhost_like($apiurl)) {
+            return $apiurl;
+        }
+        $origin = self::origin_from_absolute_url($widgeturl);
+        if ($origin === '') {
+            return $apiurl;
+        }
+        if (self::url_host_is_localhost_like($origin . '/')) {
+            return $apiurl;
+        }
+        return rtrim($origin, '/') . '/api/chat';
     }
 
     /**

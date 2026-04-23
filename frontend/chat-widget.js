@@ -26,6 +26,9 @@
  *      window.CHATBOT_HISTORY_URL = 'http://localhost:8080/api/chat/history';
  *      window.CHATBOT_TITLE = 'Asistente del Curso';
  *      window.CHATBOT_SUBTITLE = 'Pregúntame sobre el curso';
+ *
+ *      // Opcional: módulo ESM de marked (por defecto: {origen API}/static/marked.esm.js)
+ *      window.CHATBOT_MARKED_ESM_URL = 'https://tu-servidor/static/marked.esm.js';
  *    </script>
  *
  * 2. Incluye el widget:
@@ -54,13 +57,118 @@
   let markedLoaded = false;
   let markedLoadPromise = null;
 
+  function isLocalhostLikeUrl(urlStr) {
+    if (!urlStr) {
+      return false;
+    }
+    try {
+      var u = new URL(urlStr, window.location.href);
+      return /^(localhost|127\.0\.0\.1)$/i.test(u.hostname);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /**
+   * Último script con chat-widget.js en el src (origin + URL completa).
+   * Requerimos /static/ en la ruta para inferir API: evita confundir el host de Moodle
+   * si el widget se sirve desde pluginfile u otra ruta en el LMS.
+   */
+  function getChatWidgetScriptInfo() {
+    try {
+      var nodes = document.scripts || document.getElementsByTagName('script');
+      for (var i = nodes.length - 1; i >= 0; i--) {
+        var src = nodes[i].src;
+        if (src && /(^|\/)chat-widget\.js(\?|#|$)/i.test(src)) {
+          var u = new URL(src);
+          return { origin: u.origin, src: src };
+        }
+      }
+    } catch (_) {
+      /* ignore */
+    }
+    return null;
+  }
+
+  function normalizeApiChatUrl(u) {
+    var s = String(u).trim().replace(/\/?$/, '');
+    if (/\/api\/chat$/i.test(s)) {
+      return s;
+    }
+    return s + '/api/chat';
+  }
+
+  /**
+   * URL efectiva POST …/api/chat:
+   * - Si CHATBOT_API_URL ya apunta a un host público → se usa tal cual.
+   * - Si sigue en localhost pero el widget se sirve desde otro host (p. ej. assistant.neoedu.mx/static/) → mismo origen + /api/chat (corrige Moodle mal configurado).
+   * - Si no, CHATBOT_API_URL explícita o fallback dev.
+   */
+  function getResolvedApiChatUrl() {
+    var explicit = window.CHATBOT_API_URL;
+    var scriptInfo = getChatWidgetScriptInfo();
+    var scriptOrigin = scriptInfo && scriptInfo.origin;
+    var scriptSrc = scriptInfo && scriptInfo.src;
+
+    if (explicit && String(explicit).trim() && !isLocalhostLikeUrl(explicit)) {
+      return normalizeApiChatUrl(explicit);
+    }
+
+    if (
+      scriptOrigin &&
+      scriptSrc &&
+      !isLocalhostLikeUrl(scriptOrigin) &&
+      /(^|\/)chat-widget\.js(\?|#|$)/i.test(scriptSrc)
+    ) {
+      try {
+        var sameAsPage = scriptOrigin === window.location.origin;
+        if (!sameAsPage || /\/static\//i.test(scriptSrc)) {
+          return scriptOrigin.replace(/\/?$/, '') + '/api/chat';
+        }
+      } catch (_) {
+        /* ignore */
+      }
+    }
+
+    var widgetOrigin = window.CHATBOT_WIDGET_ORIGIN;
+    if (
+      explicit &&
+      String(explicit).trim() &&
+      isLocalhostLikeUrl(explicit) &&
+      widgetOrigin &&
+      String(widgetOrigin).trim() &&
+      !isLocalhostLikeUrl(widgetOrigin)
+    ) {
+      return String(widgetOrigin).replace(/\/?$/, '') + '/api/chat';
+    }
+
+    if (explicit && String(explicit).trim()) {
+      return normalizeApiChatUrl(explicit);
+    }
+
+    return 'http://localhost:8080/api/chat';
+  }
+
+  /** Origin del API sin /api/chat (para /static/marked.esm.js). */
+  function deriveApiStaticBase() {
+    var chatUrl = getResolvedApiChatUrl();
+    var base = chatUrl.replace(/\/?api\/chat\/?$/i, '');
+    return base.replace(/\/?$/, '');
+  }
+
+  /**
+   * Carga marked vía import() dinámico del bundle ESM (marked.esm.js).
+   * No usa el iframe sandbox (evita advertencia allow-scripts + allow-same-origin)
+   * ni toca window.define: no hay conflicto con RequireJS de Moodle.
+   *
+   * Entre sitios distintos el servidor del API debe enviar CORS para el .js ESM.
+   */
   function loadMarked() {
     if (markedLoadPromise) {
       return markedLoadPromise;
     }
 
-    markedLoadPromise = new Promise((resolve, reject) => {
-      // Si marked ya está cargado globalmente, usarlo
+    markedLoadPromise = new Promise(function (resolve, reject) {
       if (window.marked) {
         markedLoaded = true;
         configureMarked();
@@ -68,59 +176,68 @@
         return;
       }
 
-      // Cargar marked.js desde CDN
-      const script = document.createElement('script');
-      script.src = 'https://cdn.jsdelivr.net/npm/marked@11.1.1/marked.min.js';
-      script.async = true;
-      script.onload = () => {
-        markedLoaded = true;
-        configureMarked();
-        resolve();
-      };
-      script.onerror = () => {
-        console.warn('No se pudo cargar marked.js, usando texto plano');
-        reject();
-      };
-      document.head.appendChild(script);
+      var esmUrl =
+        window.CHATBOT_MARKED_ESM_URL ||
+        window.CHATBOT_MARKED_URL ||
+        deriveApiStaticBase() + '/static/marked.esm.js';
+
+      function finishFail(err) {
+        console.warn('No se pudo cargar marked (ESM), usando texto plano', err || '');
+        reject(err || new Error('marked unavailable'));
+      }
+
+      try {
+        import(esmUrl)
+          .then(function (mod) {
+            window.marked = mod.marked;
+            markedLoaded = true;
+            configureMarked();
+            resolve();
+          })
+          .catch(function (err) {
+            finishFail(err);
+          });
+      } catch (err) {
+        finishFail(err);
+      }
     });
 
     return markedLoadPromise;
   }
 
   function configureMarked() {
-    if (window.marked) {
-      // Configurar marked con opciones de seguridad
-      marked.setOptions({
-        breaks: true,        // Convertir \n en <br>
-        gfm: true,          // GitHub Flavored Markdown
-        headerIds: false,   // No generar IDs en headers
-        mangle: false,      // No ofuscar emails
-      });
-
-      // Configurar renderer para seguridad
-      const renderer = new marked.Renderer();
-
-      // Sanitizar links para prevenir javascript: URLs
-      const originalLink = renderer.link.bind(renderer);
-      renderer.link = (href, title, text) => {
-        // marked can pass null/undefined for malformed markdown.
-        if (!href) {
-          return text;
-        }
-        if (href.startsWith('javascript:') || href.startsWith('data:')) {
-          return text;
-        }
-        return originalLink(href, title, text);
-      };
-
-      marked.use({ renderer });
+    const md = window.marked;
+    if (!md) {
+      return;
     }
+    md.setOptions({
+      breaks: true,        // Convertir \n en <br>
+      gfm: true,          // GitHub Flavored Markdown
+      headerIds: false,   // No generar IDs en headers
+      mangle: false,      // No ofuscar emails
+    });
+
+    const renderer = new md.Renderer();
+
+    const originalLink = renderer.link.bind(renderer);
+    renderer.link = (href, title, text) => {
+      if (!href) {
+        return text;
+      }
+      if (href.startsWith('javascript:') || href.startsWith('data:')) {
+        return text;
+      }
+      return originalLink(href, title, text);
+    };
+
+    md.use({ renderer });
   }
 
   function parseMarkdown(text) {
-    if (markedLoaded && window.marked) {
+    const md = window.marked;
+    if (markedLoaded && md) {
       try {
-        return marked.parse(text);
+        return md.parse(text);
       } catch (error) {
         console.error('Error al parsear markdown:', error);
         return escapeHtml(text);
@@ -136,14 +253,12 @@
     return div.innerHTML;
   }
 
-  // Iniciar carga de marked.js
-  loadMarked();
-
   // ========================================================================
   // CONFIGURACIÓN
   // ========================================================================
 
-  const _apiBase = String(window.CHATBOT_API_URL || 'http://localhost:8080/api/chat');
+  const _explicitApiRaw = window.CHATBOT_API_URL;
+  const _apiBase = getResolvedApiChatUrl();
   const CONFIG = {
     apiUrl: _apiBase,
     historyUrl:
@@ -160,25 +275,64 @@
     accentColor: window.CHATBOT_ACCENT_COLOR || '#6366F1',
   };
 
+  try {
+    if (
+      _explicitApiRaw &&
+      isLocalhostLikeUrl(_explicitApiRaw) &&
+      !isLocalhostLikeUrl(_apiBase)
+    ) {
+      console.info(
+        '[chat-widget] CHATBOT_API_URL era localhost; usando el mismo host que chat-widget.js →',
+        _apiBase
+      );
+    } else if (
+      isLocalhostLikeUrl(_apiBase) &&
+      window.location &&
+      window.location.hostname &&
+      !isLocalhostLikeUrl(window.location.origin)
+    ) {
+      console.warn(
+        '[chat-widget] La URL del API sigue siendo localhost y la página no; no se pudo inferir otro host ' +
+          '(¿chat-widget.js sin src absoluto?). Configura en Moodle la URL pública del API.'
+      );
+    }
+  } catch (_) {
+    /* ignore */
+  }
+
+  /** Prefer live window.* so Moodle/embedders can set globals after this file parses (load-order safety). */
+  function resolveCourseId() {
+    return window.CHATBOT_COURSE_ID || CONFIG.courseId || null;
+  }
+
+  function resolveToken() {
+    return window.CHATBOT_TOKEN || CONFIG.token || null;
+  }
+
   // Validate required configuration
-  if (!CONFIG.courseId) {
+  if (!resolveCourseId()) {
     console.error('❌ CHATBOT ERROR: CHATBOT_COURSE_ID is required but not configured.');
     console.error('Please set window.CHATBOT_COURSE_ID before loading the widget.');
     console.error('Example: window.CHATBOT_COURSE_ID = "course_123";');
   }
 
-  if (!CONFIG.token) {
+  if (!resolveToken()) {
     console.error('❌ CHATBOT ERROR: CHATBOT_TOKEN is required but not configured.');
     console.error('Please set window.CHATBOT_TOKEN (JWT firmado por el servidor) before loading the widget.');
   }
 
   function authHeaders(extra) {
     const headers = Object.assign({}, extra || {});
-    if (CONFIG.token) {
-      headers['Authorization'] = 'Bearer ' + CONFIG.token;
+    const t = resolveToken();
+    if (t) {
+      headers['Authorization'] = 'Bearer ' + t;
     }
     return headers;
   }
+
+  loadMarked().catch(function () {
+    /* Markdown opcional */
+  });
 
   // ========================================================================
   // ESTILOS
@@ -701,14 +855,13 @@
      * Requiere CHATBOT_USER_ID; si no hay historial, se mantiene el saludo por defecto.
      */
     async prefetchHistory() {
-      if (!CONFIG.token || !CONFIG.historyUrl || this.historyPrefetchDone) {
+      if (!resolveToken() || !CONFIG.historyUrl || this.historyPrefetchDone) {
         return;
       }
       try {
-        const params = new URLSearchParams({
-          limit: '500',
-          offset: '0',
-        });
+        // Sin "limit": el servidor aplica CHAT_MAX_MESSAGES_SAFETY (p. ej. 40).
+        // Enviar limit=500 provoca 422 porque FastAPI valida le=MAX_MESSAGES_SAFETY.
+        const params = new URLSearchParams({ offset: '0' });
         const res = await fetch(`${CONFIG.historyUrl}?${params.toString()}`, {
           method: 'GET',
           headers: authHeaders({ Accept: 'application/json' }),
@@ -840,8 +993,10 @@
         return;
       }
 
-      // Validar que courseId esté configurado
-      if (!CONFIG.courseId) {
+      const courseId = resolveCourseId();
+      const token = resolveToken();
+
+      if (!courseId) {
         console.error('❌ Cannot send message: CHATBOT_COURSE_ID is not configured');
         this.addMessage(
           'Error de configuración: El ID del curso no está configurado. Por favor contacta al administrador.',
@@ -850,7 +1005,7 @@
         return;
       }
 
-      if (!CONFIG.token) {
+      if (!token) {
         console.error('❌ Cannot send message: CHATBOT_TOKEN is not configured');
         this.addMessage(
           'Error de autenticación: falta el token de acceso. Por favor recarga la página o contacta al administrador.',
@@ -875,7 +1030,7 @@
         // Preparar el payload con course_id y user_id
         const requestBody = {
           question: message,
-          course_id: CONFIG.courseId,
+          course_id: courseId,
         };
 
         // Agregar user_id si está configurado
