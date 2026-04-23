@@ -7,12 +7,79 @@ Handles CRUD operations for course-to-table mappings stored in Supabase.
 """
 
 import os
+import json
 import logging
 from typing import Optional, List, Dict, Any
 from datetime import datetime, timedelta
 import httpx
 
 logger = logging.getLogger(__name__)
+
+# ============================================================================
+# Course ID aliasing (Moodle numeric id -> slug)
+# ============================================================================
+
+_course_id_aliases: Optional[Dict[str, str]] = None
+
+
+def _load_course_id_aliases() -> Dict[str, str]:
+    """
+    Load COURSE_ID_ALIASES from env as JSON dict.
+
+    Example:
+        COURSE_ID_ALIASES='{"6":"mantenimiento-automotriz-40","4":"ec0241-mantenimiento-industrial"}'
+    """
+    raw = os.getenv("COURSE_ID_ALIASES", "").strip()
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            logger.warning("⚠️  COURSE_ID_ALIASES must be a JSON object; ignoring.")
+            return {}
+        out: Dict[str, str] = {}
+        for k, v in data.items():
+            ks = str(k).strip()
+            vs = str(v).strip()
+            if not ks or not vs:
+                continue
+            out[ks] = vs
+        return out
+    except Exception as exc:
+        logger.warning("⚠️  Failed to parse COURSE_ID_ALIASES JSON; ignoring. Error: %s", exc)
+        return {}
+
+
+def resolve_course_id(course_id: str) -> str:
+    """
+    Resolve course_id aliases (e.g. Moodle numeric id -> API slug).
+
+    If no alias exists, returns course_id unchanged.
+    """
+    global _course_id_aliases
+    cid = (course_id or "").strip()
+    if not cid:
+        return cid
+    if _course_id_aliases is None:
+        _course_id_aliases = _load_course_id_aliases()
+        if _course_id_aliases:
+            try:
+                logger.info(
+                    "🧭 COURSE_ID_ALIASES loaded (%d entries): %s",
+                    len(_course_id_aliases),
+                    json.dumps(_course_id_aliases, ensure_ascii=False),
+                )
+            except Exception:
+                logger.info("🧭 COURSE_ID_ALIASES loaded (%d entries)", len(_course_id_aliases))
+        else:
+            logger.info("🧭 COURSE_ID_ALIASES loaded (0 entries)")
+    mapped = (_course_id_aliases or {}).get(cid)
+    resolved = mapped if mapped else cid
+    if resolved != cid:
+        logger.info("🧭 course_id resolved via alias: raw=%s -> resolved=%s", cid, resolved)
+    else:
+        logger.debug("🧭 course_id used as-is: %s", cid)
+    return resolved
 
 
 # ============================================================================
@@ -100,6 +167,8 @@ class CourseConfigService:
         Raises:
             httpx.HTTPError: If API request fails
         """
+        course_id = resolve_course_id(course_id)
+
         # Check cache first
         if use_cache:
             cached = _cache.get(course_id)

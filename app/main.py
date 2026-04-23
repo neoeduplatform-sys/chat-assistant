@@ -25,7 +25,7 @@ from llama_index.llms.google_genai import GoogleGenAI
 from llama_index.embeddings.google_genai import GoogleGenAIEmbedding
 
 from app.supabase_vector_store import SupabaseVectorStore
-from app.course_config import get_course_config_service
+from app.course_config import get_course_config_service, resolve_course_id
 from app.cohere_rerank import build_cohere_rerank_postprocessors, effective_similarity_top_k
 from app.auth import AuthenticatedUser, get_current_user
 from app.chat_memory_service import (
@@ -398,7 +398,8 @@ async def get_chat_history(
     ``conversation_id`` nulo.
     """
     uid = current_user.user_id.strip()
-    cid = current_user.course_id.strip()
+    cid_raw = current_user.course_id.strip()
+    cid = resolve_course_id(cid_raw)
 
     course_service = get_course_config_service()
     course_config = course_service.get_course_config(cid, use_cache=True)
@@ -483,7 +484,7 @@ async def chat_endpoint(
     - `user_id`: ID del usuario (del token)
     """
     # Priorizar IDs del token sobre los del body para evitar suplantación.
-    course_id = current_user.course_id
+    course_id = resolve_course_id(current_user.course_id)
     user_id = current_user.user_id
 
     # Reemplazar los IDs del request con los del token antes de procesar.
@@ -733,12 +734,13 @@ async def ingest_content(payload: ContentIngestPayload):
     # Validar que el curso existe
     try:
         course_service = get_course_config_service()
-        course_config = course_service.get_course_config(payload.course_id, use_cache=True)
+        payload_course_id = resolve_course_id(payload.course_id)
+        course_config = course_service.get_course_config(payload_course_id, use_cache=True)
 
         if not course_config:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Course '{payload.course_id}' not found or inactive. "
+                detail=f"Course '{payload_course_id}' not found or inactive. "
                        f"Please create the course configuration first via POST /api/v1/courses"
             )
 
