@@ -271,8 +271,8 @@
     subtitle: window.CHATBOT_SUBTITLE || 'Pregúntame sobre el curso',
     placeholder: window.CHATBOT_PLACEHOLDER || 'Escribe tu pregunta...',
     position: window.CHATBOT_POSITION || 'bottom-right', // bottom-right, bottom-left
-    primaryColor: window.CHATBOT_PRIMARY_COLOR || '#4F46E5',
-    accentColor: window.CHATBOT_ACCENT_COLOR || '#6366F1',
+    primaryColor: window.CHATBOT_PRIMARY_COLOR || '#9c2135',
+    accentColor: window.CHATBOT_ACCENT_COLOR || '#B4283F',
   };
 
   try {
