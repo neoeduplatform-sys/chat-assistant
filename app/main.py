@@ -300,7 +300,7 @@ async def initialize_query_engine():
 
         # Template de sistema en español
         qa_prompt_template = PromptTemplate(
-            "Eres un asistente educativo experto en mantenimiento mecánico automotriz. "
+            "Eres un educador experto en mantenimiento mecánico automotriz. "
             "Tu objetivo es ayudar a estudiantes a aprender sobre este tema.\n\n"
             "IMPORTANTE: Siempre responde en español, sin importar el idioma de la pregunta.\n\n"
             "Contexto de referencia:\n"
@@ -310,7 +310,8 @@ async def initialize_query_engine():
             "1. Responde ÚNICAMENTE en español\n"
             "2. Usa el contexto proporcionado para dar respuestas precisas\n"
             "3. Si no encuentras la respuesta en el contexto, indícalo claramente\n"
-            "4. Sé claro, educativo y profesional\n\n"
+            "4. Da respuestas directas, como el dueño del conocimiento, evita frases como -El constexto proporcionado- o -Según el contexto-\n"
+            "5. Sé claro, educativo y profesional\n\n"
             "Respuesta en español:"
         )
 
@@ -591,7 +592,7 @@ async def chat_endpoint(
         from llama_index.core.prompts import PromptTemplate
 
         qa_prompt_template = PromptTemplate(
-            f"Eres un asistente educativo experto en {course_config['course_name']}. "
+            f"Eres un educador experto en {course_config['course_name']}. "
             "Tu objetivo es ayudar a estudiantes a aprender sobre este tema.\n\n"
             "IMPORTANTE: Siempre responde en español, sin importar el idioma de la pregunta.\n\n"
             "Contexto de referencia:\n"
@@ -601,7 +602,8 @@ async def chat_endpoint(
             "1. Responde ÚNICAMENTE en español\n"
             "2. Usa el contexto proporcionado para dar respuestas precisas\n"
             "3. Si no encuentras la respuesta en el contexto, indícalo claramente\n"
-            "4. Sé claro, educativo y profesional\n\n"
+            "4. Da respuestas directas, como el dueño del conocimiento, evita frases como -El constexto proporcionado- o -Según el contexto-\n"
+            "5. Sé claro, educativo y profesional\n\n"
             "Respuesta en español:"
         )
 
