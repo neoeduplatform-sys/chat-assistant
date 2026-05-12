@@ -27,6 +27,9 @@
  *      window.CHATBOT_TITLE = 'Asistente del Curso';
  *      window.CHATBOT_SUBTITLE = 'Pregúntame sobre el curso';
  *
+ *      // Opcional: altura máxima (px) del área de escritura antes de scroll vertical (mín. 80)
+ *      window.CHATBOT_INPUT_MAX_HEIGHT = 200;
+ *
  *      // Opcional: módulo ESM de marked (por defecto: {origen API}/static/marked.esm.js)
  *      window.CHATBOT_MARKED_ESM_URL = 'https://tu-servidor/static/marked.esm.js';
  *    </script>
@@ -273,6 +276,11 @@
     position: window.CHATBOT_POSITION || 'bottom-right', // bottom-right, bottom-left
     primaryColor: window.CHATBOT_PRIMARY_COLOR || '#9c2135',
     accentColor: window.CHATBOT_ACCENT_COLOR || '#B4283F',
+    /** Altura máxima del área de escritura (px); luego aparece scroll vertical. */
+    inputMaxHeightPx: (function () {
+      const n = Number(window.CHATBOT_INPUT_MAX_HEIGHT);
+      return Number.isFinite(n) && n >= 80 ? n : 160;
+    })(),
   };
 
   try {
@@ -358,7 +366,16 @@
       display: flex;
       align-items: center;
       justify-content: center;
-      transition: transform 0.3s ease, box-shadow 0.3s ease;
+      opacity: 1;
+      transition: opacity 0.25s ease, transform 0.3s ease, box-shadow 0.3s ease;
+    }
+
+    .chatbot-widget-container:has(.chatbot-window.open) .chatbot-toggle-button {
+      opacity: 0.5;
+    }
+
+    .chatbot-widget-container:has(.chatbot-window.open) .chatbot-toggle-button:hover {
+      opacity: 0.72;
     }
 
     .chatbot-toggle-button:hover {
@@ -497,6 +514,8 @@
       background: ${CONFIG.primaryColor};
       color: white;
       border-bottom-right-radius: 4px;
+      white-space: pre-wrap;
+      word-break: break-word;
     }
 
     .chatbot-typing {
@@ -540,17 +559,26 @@
       background: white;
       border-top: 1px solid #E5E7EB;
       display: flex;
+      align-items: flex-end;
       gap: 8px;
     }
 
     .chatbot-input {
       flex: 1;
+      min-height: 44px;
+      max-height: ${CONFIG.inputMaxHeightPx}px;
       border: 1px solid #E5E7EB;
-      border-radius: 24px;
-      padding: 12px 16px;
+      border-radius: 16px;
+      padding: 11px 16px;
       font-size: 14px;
+      font-family: inherit;
+      line-height: 1.45;
       outline: none;
+      resize: none;
+      overflow-x: hidden;
+      overflow-y: hidden;
       transition: border-color 0.2s;
+      box-sizing: border-box;
     }
 
     .chatbot-input:focus {
@@ -771,12 +799,13 @@
         </div>
 
         <div class="chatbot-input-container">
-          <input
-            type="text"
+          <textarea
             class="chatbot-input"
             id="chatbot-input"
+            rows="1"
             placeholder="${CONFIG.placeholder}"
-          />
+            aria-label="${CONFIG.placeholder}"
+          ></textarea>
           <button class="chatbot-send-button" id="chatbot-send">
             <svg viewBox="0 0 24 24">
               <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/>
@@ -847,7 +876,55 @@
 
       // Configurar event listeners
       this.setupEventListeners();
+      this._autogrowInput();
+      this._restorePanelOpenIfSaved();
       this.prefetchHistory();
+    }
+
+    _panelOpenStorageKey() {
+      return 'chatbot_panel_open:' + String(resolveCourseId() || 'default');
+    }
+
+    _persistPanelOpen(open) {
+      try {
+        const k = this._panelOpenStorageKey();
+        if (open) {
+          localStorage.setItem(k, '1');
+        } else {
+          localStorage.removeItem(k);
+        }
+      } catch (e) {
+        /* storage lleno o deshabilitado */
+      }
+    }
+
+    _restorePanelOpenIfSaved() {
+      if (!this.elements || !this.elements.window) {
+        return;
+      }
+      try {
+        if (localStorage.getItem(this._panelOpenStorageKey()) !== '1') {
+          return;
+        }
+        this.isOpen = true;
+        this.elements.window.classList.add('open');
+        this._autogrowInput();
+        this.scrollToBottom(true);
+      } catch (e) {
+        /* ignore */
+      }
+    }
+
+    /** Ajusta la altura del textarea según el contenido (hasta inputMaxHeightPx). */
+    _autogrowInput() {
+      const el = this.elements && this.elements.input;
+      if (!el || el.tagName !== 'TEXTAREA') return;
+      const max = CONFIG.inputMaxHeightPx;
+      el.style.height = '0px';
+      const sh = el.scrollHeight;
+      const next = Math.min(sh, max);
+      el.style.height = next + 'px';
+      el.style.overflowY = sh > max ? 'auto' : 'hidden';
     }
 
     /**
@@ -890,26 +967,33 @@
       this.elements.close.addEventListener('click', () => this.closeWindow());
       this.elements.send.addEventListener('click', () => this.sendMessage());
 
-      this.elements.input.addEventListener('keypress', (e) => {
-        if (e.key === 'Enter' && !this.isProcessing) {
-          this.sendMessage();
+      this.elements.input.addEventListener('input', () => this._autogrowInput());
+      this.elements.input.addEventListener('keydown', (e) => {
+        if (e.key !== 'Enter' || e.shiftKey || this.isProcessing) {
+          return;
         }
+        e.preventDefault();
+        this.sendMessage();
       });
     }
 
     toggleWindow() {
-      this.isOpen = !this.isOpen;
-      this.elements.window.classList.toggle('open', this.isOpen);
-
       if (this.isOpen) {
-        this.elements.input.focus();
-        this.scrollToBottom(true);
+        // Solo el botón X cierra; el FAB no alterna a cerrado.
+        return;
       }
+      this.isOpen = true;
+      this.elements.window.classList.add('open');
+      this._persistPanelOpen(true);
+      this.elements.input.focus();
+      this._autogrowInput();
+      this.scrollToBottom(true);
     }
 
     closeWindow() {
       this.isOpen = false;
       this.elements.window.classList.remove('open');
+      this._persistPanelOpen(false);
     }
 
     addMessage(text, isUser = false, sources = null) {
@@ -1017,6 +1101,7 @@
       // Agregar mensaje del usuario
       this.addMessage(message, true);
       this.elements.input.value = '';
+      this._autogrowInput();
 
       // Deshabilitar input
       this.isProcessing = true;
