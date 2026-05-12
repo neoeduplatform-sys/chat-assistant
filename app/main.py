@@ -8,7 +8,7 @@ que utiliza RAG (Retrieval-Augmented Generation) con Gemini y Supabase (pgvector
 
 import os
 import logging
-from typing import Optional, List
+from typing import Any, Optional, List
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, HTTPException, status, Query
@@ -21,6 +21,9 @@ from pathlib import Path
 import httpx
 
 from llama_index.core import VectorStoreIndex, Settings
+from llama_index.core.schema import QueryBundle
+from llama_index.core.query_engine import RetrieverQueryEngine
+from llama_index.core.response_synthesizers import ResponseMode
 from llama_index.llms.google_genai import GoogleGenAI
 from llama_index.embeddings.google_genai import GoogleGenAIEmbedding
 
@@ -55,6 +58,64 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+
+def _log_rag_vs_synthesis_context(
+    retrieval_query_str: str,
+    composed_query: str,
+    retrieved_nodes: List[Any],
+) -> None:
+    """Logs explícitos: pregunta limpia (retrieve) vs texto enriquecido (síntesis) y resumen de chunks."""
+    max_synth = int(os.getenv("CHAT_LOG_SYNTHESIS_BODY_MAX_CHARS", "20000"))
+    preview = int(os.getenv("CHAT_LOG_CHUNK_PREVIEW_CHARS", "200"))
+
+    logger.info(
+        "========== [RAG_RETRIEVAL_QUERY] Pregunta limpia usada para embedding y RPC "
+        "(%d caracteres) ==========\n%s\n"
+        "========== [RAG_RETRIEVAL_QUERY] fin ==========",
+        len(retrieval_query_str),
+        retrieval_query_str,
+    )
+
+    synth_body = composed_query
+    if len(synth_body) > max_synth:
+        logger.info(
+            "========== [LLM_SYNTHESIS_QUERY] Contexto enriquecido para el agente "
+            "(truncado en log: total %d caracteres; límite CHAT_LOG_SYNTHESIS_BODY_MAX_CHARS=%d) ==========\n%s\n"
+            "... [log truncado]\n"
+            "========== [LLM_SYNTHESIS_QUERY] fin (vista parcial) ==========",
+            len(synth_body),
+            max_synth,
+            synth_body[:max_synth],
+        )
+    else:
+        logger.info(
+            "========== [LLM_SYNTHESIS_QUERY] Contexto enriquecido para el agente "
+            "({query_str} del template QA; %d caracteres) ==========\n%s\n"
+            "========== [LLM_SYNTHESIS_QUERY] fin ==========",
+            len(synth_body),
+            synth_body,
+        )
+
+    logger.info(
+        "[RAG_RETRIEVED_CHUNKS] Nodos recuperados para armar context_str del LLM: %d",
+        len(retrieved_nodes),
+    )
+    for i, nws in enumerate(retrieved_nodes):
+        node = nws.node
+        score = getattr(nws, "score", None)
+        text = (node.get_content() or "").replace("\n", " ").strip()
+        snippet = text[:preview] + ("..." if len(text) > preview else "")
+        md = getattr(node, "metadata", None) or {}
+        src = md.get("title") or md.get("unique_content_id") or md.get("file_name") or "(sin metadata de título)"
+        logger.info(
+            "[RAG_CHUNK_%d] similarity/score=%s | fuente=%s | extracto=%s",
+            i,
+            score,
+            src,
+            snippet,
+        )
+
 
 # Variable global para el motor de consulta
 query_engine = None
@@ -547,11 +608,13 @@ async def chat_endpoint(
         rerank_postprocessors = build_cohere_rerank_postprocessors()
         logger.info("Rerank active for course %s: %s", request.course_id, bool(rerank_postprocessors))
 
-        course_query_engine = index.as_query_engine(
-            streaming=False,
-            similarity_top_k=effective_similarity_top_k(),
+        retriever = index.as_retriever(similarity_top_k=effective_similarity_top_k())
+        course_query_engine = RetrieverQueryEngine.from_args(
+            retriever=retriever,
             text_qa_template=qa_prompt_template,
+            response_mode=ResponseMode.COMPACT,
             node_postprocessors=rerank_postprocessors,
+            streaming=False,
         )
 
         # 4.5 Capas A (historial) y B (resumen) — solo si hay user_id
@@ -600,10 +663,28 @@ async def chat_endpoint(
             except Exception as exc:
                 logger.error("⚠️  No se pudo guardar mensaje de usuario: %s", exc, exc_info=True)
 
-        # 5. Realizar la consulta
-        logger.info(f"🔍 Iniciando búsqueda vectorial y generación de respuesta...")
-        response = course_query_engine.query(composed_query)
-        logger.info(f"✅ Query ejecutado exitosamente")
+        # 5. Recuperación con pregunta limpia (embedding/RPC) y síntesis con contexto conversacional
+        retrieval_query_str = request.question.strip()
+        retrieval_bundle = QueryBundle(query_str=retrieval_query_str)
+        synthesis_bundle = QueryBundle(query_str=composed_query)
+        if composed_query != retrieval_query_str:
+            logger.info(
+                "🧠 Retrieve usa pregunta limpia; síntesis usa contexto enriquecido "
+                "(limpio %d chars vs enriquecido %d chars)",
+                len(retrieval_query_str),
+                len(composed_query),
+            )
+        else:
+            logger.info(
+                "🧠 Sin bloque de memoria en esta petición: retrieve y síntesis usan la misma cadena (%d chars)",
+                len(retrieval_query_str),
+            )
+        logger.info("🔍 Iniciando búsqueda vectorial…")
+        retrieved_nodes = course_query_engine.retrieve(retrieval_bundle)
+        _log_rag_vs_synthesis_context(retrieval_query_str, composed_query, retrieved_nodes)
+        logger.info("🔍 Iniciando síntesis (LLM) con contexto enriquecido…")
+        response = course_query_engine.synthesize(synthesis_bundle, retrieved_nodes)
+        logger.info("✅ Query ejecutado exitosamente")
 
         # 6. Extraer la respuesta
         answer = str(response)
