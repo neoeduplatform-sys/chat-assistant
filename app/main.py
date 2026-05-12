@@ -310,7 +310,7 @@ async def initialize_query_engine():
             "1. Responde ÚNICAMENTE en español\n"
             "2. Usa el contexto proporcionado para dar respuestas precisas\n"
             "3. Si no encuentras la respuesta en el contexto, indícalo claramente\n"
-            "4. Da respuestas directas, como el dueño del conocimiento\n"
+            "4. Da respuestas directas, como el dueño del conocimiento, evita frases como -El constexto proporcionado- o -Según el contexto-\n"
             "5. Sé claro, educativo y profesional\n\n"
             "Respuesta en español:"
         )
