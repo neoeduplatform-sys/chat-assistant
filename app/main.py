@@ -34,6 +34,7 @@ from app.auth import AuthenticatedUser, get_current_user
 from app.chat_memory_service import (
     get_chat_memory_service,
     summarize_conversation,
+    estimate_tokens,
     HISTORY_MAX_TOKENS,
     MAX_MESSAGES_SAFETY,
 )
@@ -42,6 +43,8 @@ from app.models import (
     ChatResponse,
     ChatHistoryResponse,
     ChatHistoryMessageItem,
+    ChatScopeResponse,
+    ChatScopeMessageItem,
     CourseConfigCreate,
     CourseConfigUpdate,
     CourseConfigResponse,
@@ -521,6 +524,84 @@ async def get_chat_history(
         limit=limit,
         offset=offset,
         has_more=has_more,
+    )
+
+
+@app.get("/api/chat/scope", response_model=ChatScopeResponse)
+async def get_chat_scope(
+    question: Optional[str] = Query(
+        None,
+        min_length=1,
+        max_length=5000,
+        description="Pregunta hipotética opcional; si se envía, la respuesta incluye composed_query",
+    ),
+    current_user: AuthenticatedUser = Depends(get_current_user),
+):
+    """
+    Previsualiza el "scope" conversacional (capas A + B) que /api/chat fusionaría
+    con la búsqueda RAG para la próxima pregunta de este usuario en este curso.
+
+    Solo lectura: no persiste mensajes, no llama al LLM y no realiza búsqueda
+    vectorial. ``user_id`` y ``course_id`` se extraen del JWT validado (mismo
+    patrón anti-suplantación que /api/chat/history).
+
+    Si se envía ``question``, ``composed_query`` contiene el ``query_str``
+    exacto que /api/chat construiría para esa pregunta.
+    """
+    uid = current_user.user_id.strip()
+    cid = resolve_course_id(current_user.course_id.strip())
+
+    course_service = get_course_config_service()
+    course_config = course_service.get_course_config(cid, use_cache=True)
+    if not course_config:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Course '{cid}' not found or inactive.",
+        )
+
+    try:
+        svc = get_chat_memory_service()
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Chat memory storage is not configured (Supabase credentials missing).",
+        )
+
+    q = question.strip() if question else None
+
+    conversation_id = svc.find_conversation_id(uid, cid)
+    summary_raw = svc.get_summary(uid, cid)
+    summary_out = summary_raw.strip() if summary_raw else None
+
+    if conversation_id:
+        recent = svc.get_recent_messages(conversation_id, limit=MAX_MESSAGES_SAFETY)
+        trimmed = svc.trim_to_token_budget(recent, max_tokens=HISTORY_MAX_TOKENS)
+    else:
+        trimmed = []
+
+    history_items = [
+        ChatScopeMessageItem(role=m["role"], content=m["content"]) for m in trimmed
+    ]
+    # +4 per message matches the role-tag overhead used inside trim_to_token_budget
+    history_tokens = sum(estimate_tokens(m["content"]) + 4 for m in trimmed)
+    summary_tokens = estimate_tokens(summary_out or "")
+
+    composed = None
+    if q:
+        composed = svc.build_composed_query_str(summary_out or "", trimmed, q)
+
+    return ChatScopeResponse(
+        conversation_id=conversation_id,
+        course_id=cid,
+        user_id=uid,
+        summary=summary_out,
+        summary_tokens=summary_tokens,
+        history=history_items,
+        history_message_count=len(history_items),
+        history_tokens=history_tokens,
+        history_max_tokens_budget=HISTORY_MAX_TOKENS,
+        question=q,
+        composed_query=composed,
     )
 
 

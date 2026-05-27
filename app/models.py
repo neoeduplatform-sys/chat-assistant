@@ -84,6 +84,42 @@ class ChatHistoryResponse(BaseModel):
     has_more: bool = Field(False, description="True if more messages exist after this page")
 
 
+class ChatScopeMessageItem(BaseModel):
+    """Message as it would be merged into the LLM synthesis prompt (no id/timestamp)."""
+    role: str = Field(..., description="'user' or 'assistant'")
+    content: str = Field(..., description="Message body, exactly as it would be merged")
+
+
+class ChatScopeResponse(BaseModel):
+    """Preview of Layer A + Layer B that /api/chat would merge with the next question."""
+    conversation_id: Optional[str] = Field(
+        None,
+        description="UUID of chat_conversations row; null if no thread exists yet",
+    )
+    course_id: str = Field(..., description="Course identifier (from JWT)")
+    user_id: str = Field(..., description="User identifier (from JWT)")
+    summary: Optional[str] = Field(None, description="Rolling summary (layer B), if any")
+    summary_tokens: int = Field(0, description="Rough token estimate for the summary")
+    history: List[ChatScopeMessageItem] = Field(
+        default_factory=list,
+        description="Layer A messages AFTER token-budget trimming",
+    )
+    history_message_count: int = Field(0, description="Number of trimmed history messages")
+    history_tokens: int = Field(0, description="Rough token estimate for the trimmed history")
+    history_max_tokens_budget: int = Field(
+        ...,
+        description="CHAT_HISTORY_MAX_TOKENS at request time, for reference",
+    )
+    question: Optional[str] = Field(
+        None,
+        description="The hypothetical question echoed back, if one was supplied",
+    )
+    composed_query: Optional[str] = Field(
+        None,
+        description="Full query_str /api/chat would build for `question`; null when no question was supplied",
+    )
+
+
 # ============================================================================
 # Course Configuration Models
 # ============================================================================
