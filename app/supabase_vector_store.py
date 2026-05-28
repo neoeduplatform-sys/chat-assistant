@@ -8,7 +8,7 @@ en lugar de conexión directa a PostgreSQL, evitando problemas con IPv6.
 
 import logging
 import httpx
-from typing import List, Optional, Any
+from typing import Any, Dict, List, Optional
 
 from pydantic import ConfigDict, PrivateAttr
 
@@ -19,6 +19,35 @@ from llama_index.core.vector_stores.types import (
 )
 from llama_index.core.schema import BaseNode, TextNode
 
+from app.rpc_filter import (
+    filter_empty,
+    filter_has_topic_id,
+    is_retrieval_merge_with_topic_id_enabled,
+    is_topic_priority_retrieval_enabled,
+    topic_priority_min_phase1_results,
+)
+
+
+def _advanced_retrieval_active() -> bool:
+    from app.chunk_diversity import is_chunk_diversity_enabled
+    from app.cohere_rerank import is_rerank_active
+
+    return is_rerank_active() or is_chunk_diversity_enabled()
+
+
+def _use_two_phase_retrieval() -> bool:
+    if is_topic_priority_retrieval_enabled():
+        return True
+    return is_retrieval_merge_with_topic_id_enabled() and _advanced_retrieval_active()
+
+
+def _two_phase_always_merge() -> bool:
+    """Fusionar fase curricular + global (no cortar solo en fase 1)."""
+    if is_topic_priority_retrieval_enabled():
+        from app.env_utils import env_bool
+
+        return env_bool("TOPIC_PRIORITY_ALWAYS_MERGE", default=False)
+    return True
 from app.source_labels import metadata_source_label
 
 logger = logging.getLogger(__name__)
@@ -235,86 +264,188 @@ class SupabaseVectorStore(BasePydanticVectorStore):
             logger.error(f"Error al eliminar documentos con {filter_key}={filter_value}: {e}")
             raise
 
-    def query(self, query: VectorStoreQuery, **kwargs: Any) -> VectorStoreQueryResult:
-        """
-        Realiza una búsqueda vectorial usando la función RPC de Supabase.
+    @staticmethod
+    def merge_query_results(
+        primary: VectorStoreQueryResult,
+        secondary: VectorStoreQueryResult,
+        max_count: int,
+    ) -> VectorStoreQueryResult:
+        """Une resultados priorizando ``primary`` (p. ej. chunks con topic_id)."""
+        seen: set[str] = set()
+        nodes: List[TextNode] = []
+        similarities: List[float] = []
+        ids: List[str] = []
 
-        Args:
-            query: Query con el embedding de búsqueda
+        for batch in (primary, secondary):
+            for node, sim, node_id in zip(batch.nodes, batch.similarities, batch.ids):
+                if node_id in seen:
+                    continue
+                seen.add(node_id)
+                nodes.append(node)
+                similarities.append(sim)
+                ids.append(node_id)
+                if len(nodes) >= max_count:
+                    break
+            if len(nodes) >= max_count:
+                break
 
-        Returns:
-            Resultados de la búsqueda
-        """
-        # Obtener embedding de la query
-        query_embedding = query.query_embedding
-        if not query_embedding:
-            raise ValueError("query_embedding es requerido para la búsqueda")
+        return VectorStoreQueryResult(nodes=nodes, similarities=similarities, ids=ids)
 
-        # Parámetros para la función RPC
-        match_count = query.similarity_top_k or 3
+    def _rows_to_query_result(self, data: Optional[List[dict]]) -> VectorStoreQueryResult:
+        if not data:
+            return VectorStoreQueryResult(nodes=[], similarities=[], ids=[])
 
+        nodes: List[TextNode] = []
+        similarities: List[float] = []
+        ids: List[str] = []
+
+        for row in data:
+            node = TextNode(
+                text=row.get("content", ""),
+                metadata=row.get("metadata", {}),
+                id_=str(row.get("id", "")),
+            )
+            nodes.append(node)
+            similarities.append(float(row.get("similarity", 0.0)))
+            ids.append(str(row.get("id", "")))
+
+        return VectorStoreQueryResult(nodes=nodes, similarities=similarities, ids=ids)
+
+    def _call_rpc(
+        self,
+        query_embedding: List[float],
+        match_count: int,
+        metadata_filter: Dict[str, Any],
+    ) -> VectorStoreQueryResult:
         rpc_params = {
             "query_embedding": query_embedding,
             "match_count": match_count,
             "match_threshold": self.match_threshold,
-            "filter": {},  # Puedes agregar filtros personalizados aquí
+            "filter": metadata_filter,
         }
-
-        logger.debug(f"Ejecutando RPC: {self.rpc_function_name} con match_count={match_count}")
-
-        # URL para llamar a la función RPC
         url = f"{self.supabase_url}/rest/v1/rpc/{self.rpc_function_name}"
+        filter_label = metadata_filter if metadata_filter else "(sin filtro)"
 
-        # Log INFO para debugging
-        logger.info(f"🔍 Calling Supabase RPC: {self.rpc_function_name}")
-        logger.info(f"   URL: {url}")
-        logger.info(f"   Parameters: match_count={match_count}, threshold={self.match_threshold}")
+        logger.info(
+            "🔍 RPC %s | match_count=%s threshold=%s filter=%s",
+            self.rpc_function_name,
+            match_count,
+            self.match_threshold,
+            filter_label,
+        )
+
+        response = self._client.post(url, json=rpc_params)
+        response.raise_for_status()
+        data = response.json()
+        count = len(data) if data else 0
+        logger.info("📊 RPC Response: %d result(s)", count)
+        return self._rows_to_query_result(data)
+
+    def _query_single(
+        self,
+        query_embedding: List[float],
+        match_count: int,
+        metadata_filter: Optional[Dict[str, Any]] = None,
+    ) -> VectorStoreQueryResult:
+        filt = metadata_filter if metadata_filter is not None else filter_empty()
+        try:
+            result = self._call_rpc(query_embedding, match_count, filt)
+        except httpx.HTTPStatusError as e:
+            if filt and e.response.status_code in (400, 404):
+                logger.warning(
+                    "RPC rechazó filter=%s (%s). ¿Ejecutaste migrations/004_rpc_metadata_filter.sql "
+                    "y actualizaste la función match_*? Reintentando sin filtro.",
+                    filt,
+                    e.response.status_code,
+                )
+                result = self._call_rpc(query_embedding, match_count, filter_empty())
+            else:
+                logger.error(
+                    "Error HTTP en búsqueda RPC: %s - %s",
+                    e.response.status_code,
+                    e.response.text,
+                )
+                raise
+
+        if result.nodes:
+            first_label = metadata_source_label(result.nodes[0].metadata) or "N/A"
+            logger.info(
+                "   Primera fuente: %s (similarity: %.3f)",
+                first_label,
+                result.similarities[0],
+            )
+        return result
+
+    def _query_topic_priority_two_phase(
+        self,
+        query_embedding: List[float],
+        match_count: int,
+    ) -> VectorStoreQueryResult:
+        min_phase1 = topic_priority_min_phase1_results()
+        always_merge = _two_phase_always_merge()
+
+        phase1 = self._query_single(query_embedding, match_count, filter_has_topic_id())
+        n1 = len(phase1.nodes)
+        logger.info(
+            "📚 Búsqueda fase 1 (has_topic_id): %d/%d resultados",
+            n1,
+            match_count,
+        )
+
+        if not always_merge and n1 >= min_phase1:
+            logger.info(
+                "✅ Fase 1 suficiente (>=%d); no se amplía búsqueda sin filtro",
+                min_phase1,
+            )
+            return phase1
+
+        phase2 = self._query_single(query_embedding, match_count, filter_empty())
+        n2 = len(phase2.nodes)
+        logger.info("📚 Búsqueda fase 2 (sin filtro): %d resultados", n2)
+
+        merged = self.merge_query_results(phase1, phase2, match_count)
+        logger.info(
+            "✅ Búsqueda two-phase fusionada: fase1=%d + fase2=%d → %d candidatos",
+            n1,
+            n2,
+            len(merged.nodes),
+        )
+        return merged
+
+    def query(self, query: VectorStoreQuery, **kwargs: Any) -> VectorStoreQueryResult:
+        """
+        Realiza una búsqueda vectorial usando la función RPC de Supabase.
+
+        Con diversidad/rerank y ``RETRIEVAL_MERGE_WITH_TOPIC_ID=true`` (default):
+        fusiona fase ``has_topic_id`` + búsqueda global.
+        """
+        query_embedding = query.query_embedding
+        if not query_embedding:
+            raise ValueError("query_embedding es requerido para la búsqueda")
+
+        match_count = query.similarity_top_k or 3
 
         try:
-            # Llamar a la función RPC de Supabase usando httpx
-            response = self._client.post(url, json=rpc_params)
-            response.raise_for_status()
+            if _use_two_phase_retrieval():
+                result = self._query_topic_priority_two_phase(query_embedding, match_count)
+            else:
+                result = self._query_single(query_embedding, match_count, filter_empty())
 
-            data = response.json()
-
-            # Log de resultados obtenidos
-            logger.info(f"📊 RPC Response: {len(data) if data else 0} results returned from Supabase")
-
-            if not data:
+            if not result.nodes:
                 logger.warning("⚠️  No se encontraron resultados para la búsqueda")
-                return VectorStoreQueryResult(nodes=[], similarities=[], ids=[])
-
-            # Procesar resultados
-            nodes = []
-            similarities = []
-            ids = []
-
-            for row in data:
-                # Crear nodo a partir de los datos
-                node = TextNode(
-                    text=row.get("content", ""),
-                    metadata=row.get("metadata", {}),
-                    id_=str(row.get("id", "")),
+            elif len(result.nodes) < match_count:
+                logger.info(
+                    "ℹ️  RPC devolvió %d/%d (umbral %.2f puede limitar candidatos)",
+                    len(result.nodes),
+                    match_count,
+                    self.match_threshold,
                 )
 
-                nodes.append(node)
-                similarities.append(float(row.get("similarity", 0.0)))
-                ids.append(str(row.get("id", "")))
+            logger.info("✅ Búsqueda completada: %d resultado(s)", len(result.nodes))
+            return result
 
-            logger.info(f"✅ Búsqueda completada: {len(nodes)} resultados encontrados")
-            if nodes:
-                first_label = metadata_source_label(nodes[0].metadata) or "N/A"
-                logger.info(f"   Primera fuente: {first_label} (similarity: {similarities[0]:.3f})")
-
-            return VectorStoreQueryResult(
-                nodes=nodes,
-                similarities=similarities,
-                ids=ids,
-            )
-
-        except httpx.HTTPStatusError as e:
-            logger.error(f"Error HTTP en búsqueda RPC: {e.response.status_code} - {e.response.text}")
+        except httpx.HTTPStatusError:
             raise
         except Exception as e:
-            logger.error(f"Error en búsqueda RPC: {e}")
+            logger.error("Error en búsqueda RPC: %s", e)
             raise

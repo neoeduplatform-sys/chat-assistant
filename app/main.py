@@ -30,7 +30,7 @@ from llama_index.embeddings.google_genai import GoogleGenAIEmbedding
 from app.supabase_vector_store import SupabaseVectorStore
 from app.course_config import get_course_config_service, resolve_course_id
 from app.source_labels import metadata_source_label
-from app.cohere_rerank import build_cohere_rerank_postprocessors, effective_similarity_top_k
+from app.cohere_rerank import build_retrieval_postprocessors, effective_similarity_top_k
 from app.auth import AuthenticatedUser, get_current_user
 from app.chat_memory_service import (
     get_chat_memory_service,
@@ -319,14 +319,14 @@ async def initialize_query_engine():
             "Respuesta en español:"
         )
 
-        rerank_postprocessors = build_cohere_rerank_postprocessors()
-        logger.info("Rerank active: %s", bool(rerank_postprocessors))
+        retrieval_postprocessors = build_retrieval_postprocessors()
+        logger.info("Retrieval postprocessors: %d", len(retrieval_postprocessors))
 
         query_engine = index.as_query_engine(
             streaming=False,
             similarity_top_k=effective_similarity_top_k(),
             text_qa_template=qa_prompt_template,
-            node_postprocessors=rerank_postprocessors,
+            node_postprocessors=retrieval_postprocessors,
         )
 
         logger.info("✅ Motor de consulta inicializado correctamente.")
@@ -689,15 +689,19 @@ async def chat_endpoint(
             "Respuesta en español:"
         )
 
-        rerank_postprocessors = build_cohere_rerank_postprocessors()
-        logger.info("Rerank active for course %s: %s", request.course_id, bool(rerank_postprocessors))
+        retrieval_postprocessors = build_retrieval_postprocessors()
+        logger.info(
+            "Retrieval postprocessors for course %s: %d",
+            request.course_id,
+            len(retrieval_postprocessors),
+        )
 
         retriever = index.as_retriever(similarity_top_k=effective_similarity_top_k())
         course_query_engine = RetrieverQueryEngine.from_args(
             retriever=retriever,
             text_qa_template=qa_prompt_template,
             response_mode=ResponseMode.COMPACT,
-            node_postprocessors=rerank_postprocessors,
+            node_postprocessors=retrieval_postprocessors,
             streaming=False,
         )
 
