@@ -19,6 +19,8 @@ from llama_index.core.vector_stores.types import (
 )
 from llama_index.core.schema import BaseNode, TextNode
 
+from app.source_labels import metadata_source_label
+
 logger = logging.getLogger(__name__)
 
 
@@ -301,8 +303,8 @@ class SupabaseVectorStore(BasePydanticVectorStore):
 
             logger.info(f"✅ Búsqueda completada: {len(nodes)} resultados encontrados")
             if nodes:
-                first_metadata = nodes[0].metadata
-                logger.info(f"   Primera fuente: {first_metadata.get('title', 'N/A')} (similarity: {similarities[0]:.3f})")
+                first_label = metadata_source_label(nodes[0].metadata) or "N/A"
+                logger.info(f"   Primera fuente: {first_label} (similarity: {similarities[0]:.3f})")
 
             return VectorStoreQueryResult(
                 nodes=nodes,

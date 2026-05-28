@@ -29,6 +29,7 @@ from llama_index.embeddings.google_genai import GoogleGenAIEmbedding
 
 from app.supabase_vector_store import SupabaseVectorStore
 from app.course_config import get_course_config_service, resolve_course_id
+from app.source_labels import metadata_source_label
 from app.cohere_rerank import build_cohere_rerank_postprocessors, effective_similarity_top_k
 from app.auth import AuthenticatedUser, get_current_user
 from app.chat_memory_service import (
@@ -110,7 +111,7 @@ def _log_rag_vs_synthesis_context(
         text = (node.get_content() or "").replace("\n", " ").strip()
         snippet = text[:preview] + ("..." if len(text) > preview else "")
         md = getattr(node, "metadata", None) or {}
-        src = md.get("title") or md.get("unique_content_id") or md.get("file_name") or "(sin metadata de título)"
+        src = metadata_source_label(md) or "(sin metadata de título)"
         logger.info(
             "[RAG_CHUNK_%d] similarity/score=%s | fuente=%s | extracto=%s",
             i,
@@ -781,11 +782,9 @@ async def chat_endpoint(
 
             for node in response.source_nodes:
                 if hasattr(node, 'node') and hasattr(node.node, 'metadata'):
-                    metadata = node.node.metadata
-                    # Extraer título o unique_content_id como fuente
-                    source = metadata.get('title') or metadata.get('unique_content_id') or metadata.get('file_name')
-                    if source:
-                        sources.append(source)
+                    label = metadata_source_label(node.node.metadata)
+                    if label:
+                        sources.append(label)
 
         # Eliminar duplicados de fuentes
         sources = list(set(sources)) if sources else None
@@ -804,8 +803,13 @@ async def chat_endpoint(
         logger.info(f"✅ Respuesta generada exitosamente.")
         if sources:
             logger.info(f"📚 Fuentes utilizadas: {sources}")
+        elif source_count > 0:
+            logger.warning(
+                "📚 %d nodos recuperados pero sin etiqueta de fuente en metadata",
+                source_count,
+            )
         else:
-            logger.info(f"📚 Sin fuentes disponibles (base de datos vacía)")
+            logger.info("📚 Sin nodos recuperados para esta consulta")
 
         # 9. Persistir respuesta del asistente y refrescar resumen si toca
         if memory_ctx is not None:
