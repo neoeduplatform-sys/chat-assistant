@@ -452,7 +452,15 @@ async def get_chat_history(
         le=MAX_MESSAGES_SAFETY,
         description="Max messages per page",
     ),
-    offset: int = Query(0, ge=0, description="Pagination offset"),
+    offset: int = Query(
+        0,
+        ge=0,
+        description="Pagination offset (from start if tail=false, from end if tail=true)",
+    ),
+    tail: bool = Query(
+        True,
+        description="If true, return the newest messages first (offset skips older pages)",
+    ),
     current_user: AuthenticatedUser = Depends(get_current_user),
 ):
     """
@@ -462,6 +470,9 @@ async def get_chat_history(
     como query params para evitar que un usuario consulte historiales ajenos.
     Si aún no existe hilo en base de datos, devuelve mensajes vacíos y
     ``conversation_id`` nulo.
+
+    Con ``tail=true`` (defecto), ``offset=0`` devuelve la página más reciente
+    (p. ej. los últimos 40 mensajes), no los más antiguos.
     """
     uid = current_user.user_id.strip()
     cid_raw = current_user.course_id.strip()
@@ -498,7 +509,19 @@ async def get_chat_history(
         )
 
     total_count = svc.count_messages(conversation_id)
-    rows = svc.list_messages_chronological(conversation_id, limit=limit, offset=offset)
+    if tail:
+        rows = svc.list_messages_tail_chronological(
+            conversation_id,
+            limit=limit,
+            offset_from_end=offset,
+            total_count=total_count,
+        )
+        has_more = svc.tail_page_start_index(total_count, limit, offset) > 0
+    else:
+        rows = svc.list_messages_chronological(
+            conversation_id, limit=limit, offset=offset
+        )
+        has_more = False
     summary_raw = svc.get_summary(uid, cid)
     summary_out = summary_raw.strip() if summary_raw else None
 
@@ -513,7 +536,8 @@ async def get_chat_history(
             )
         )
 
-    has_more = offset + len(messages_out) < total_count
+    if not tail:
+        has_more = offset + len(messages_out) < total_count
 
     return ChatHistoryResponse(
         conversation_id=conversation_id,

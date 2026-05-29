@@ -80,8 +80,14 @@ class ChatHistoryResponse(BaseModel):
     )
     total_count: int = Field(0, description="Total messages in this conversation")
     limit: int = Field(..., description="Page size used for this response")
-    offset: int = Field(..., description="Pagination offset used")
-    has_more: bool = Field(False, description="True if more messages exist after this page")
+    offset: int = Field(
+        ...,
+        description="Pagination offset (from end when tail=true on /api/chat/history)",
+    )
+    has_more: bool = Field(
+        False,
+        description="True if older messages exist beyond this page (tail=true: before this window)",
+    )
 
 
 class ChatScopeMessageItem(BaseModel):

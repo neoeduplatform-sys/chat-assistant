@@ -929,7 +929,8 @@
 
     /**
      * Carga mensajes guardados (misma sesión de usuario/curso) para mostrar tras F5.
-     * Requiere CHATBOT_USER_ID; si no hay historial, se mantiene el saludo por defecto.
+     * Requiere JWT; si no hay historial, se mantiene el saludo por defecto.
+     * tail=true pide la página más reciente (no los primeros 40 cronológicos).
      */
     async prefetchHistory() {
       if (!resolveToken() || !CONFIG.historyUrl || this.historyPrefetchDone) {
@@ -938,7 +939,7 @@
       try {
         // Sin "limit": el servidor aplica CHAT_MAX_MESSAGES_SAFETY (p. ej. 40).
         // Enviar limit=500 provoca 422 porque FastAPI valida le=MAX_MESSAGES_SAFETY.
-        const params = new URLSearchParams({ offset: '0' });
+        const params = new URLSearchParams({ offset: '0', tail: 'true' });
         const res = await fetch(`${CONFIG.historyUrl}?${params.toString()}`, {
           method: 'GET',
           headers: authHeaders({ Accept: 'application/json' }),

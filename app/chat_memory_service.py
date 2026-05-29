@@ -140,6 +140,36 @@ class ChatMemoryService:
         r.raise_for_status()
         return r.json() or []
 
+    @staticmethod
+    def tail_page_start_index(total: int, limit: int, offset_from_end: int) -> int:
+        """Index (0-based) of the oldest message in a tail page.
+
+        ``offset_from_end`` skips that many messages counting back from the newest.
+        Example: total=170, limit=40, offset_from_end=0 → start=130 (last 40 msgs).
+        """
+        if total <= 0:
+            return 0
+        return max(0, total - limit - max(0, offset_from_end))
+
+    def list_messages_tail_chronological(
+        self,
+        conversation_id: str,
+        *,
+        limit: int = 40,
+        offset_from_end: int = 0,
+        total_count: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """Return the most recent messages in chronological order (oldest first within the page)."""
+        total = total_count if total_count is not None else self.count_messages(conversation_id)
+        if total <= 0:
+            return []
+        start = self.tail_page_start_index(total, limit, offset_from_end)
+        return self.list_messages_chronological(
+            conversation_id,
+            limit=min(limit, total - start),
+            offset=start,
+        )
+
     def persist_message(self, conversation_id: str, role: str, content: str) -> None:
         if role not in ("user", "assistant"):
             raise ValueError(f"invalid role: {role}")
