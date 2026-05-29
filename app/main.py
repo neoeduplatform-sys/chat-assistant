@@ -764,6 +764,18 @@ async def chat_endpoint(
             )
         logger.info("🔍 Iniciando búsqueda vectorial…")
         retrieved_nodes = course_query_engine.retrieve(retrieval_bundle)
+        logger.info(
+            "[RAG_FINAL_CHUNKS] %d chunks selected for LLM (post-rerank if enabled):",
+            len(retrieved_nodes),
+        )
+        for nws in retrieved_nodes:
+            md = getattr(nws.node, "metadata", {}) or {}
+            logger.info(
+                "  • db_id=%s | unique_content_id=%s | score=%.4f",
+                nws.node.node_id,
+                md.get("unique_content_id", "N/A"),
+                float(nws.score) if nws.score is not None else 0.0,
+            )
         _log_rag_vs_synthesis_context(retrieval_query_str, composed_query, retrieved_nodes)
         logger.info("🔍 Iniciando síntesis (LLM) con contexto enriquecido…")
         response = course_query_engine.synthesize(synthesis_bundle, retrieved_nodes)

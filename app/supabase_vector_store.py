@@ -304,6 +304,15 @@ class SupabaseVectorStore(BasePydanticVectorStore):
                 first_metadata = nodes[0].metadata
                 logger.info(f"   Primera fuente: {first_metadata.get('title', 'N/A')} (similarity: {similarities[0]:.3f})")
 
+            logger.info("[RAG_DB_RESULTS] %d initial chunks from Supabase:", len(nodes))
+            for n, sim in zip(nodes, similarities):
+                logger.info(
+                    "  • db_id=%s | unique_content_id=%s | similarity=%.4f",
+                    n.id_,
+                    n.metadata.get("unique_content_id", "N/A"),
+                    sim,
+                )
+
             return VectorStoreQueryResult(
                 nodes=nodes,
                 similarities=similarities,
