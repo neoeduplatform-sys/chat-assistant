@@ -442,6 +442,16 @@ class SupabaseVectorStore(BasePydanticVectorStore):
                 )
 
             logger.info("✅ Búsqueda completada: %d resultado(s)", len(result.nodes))
+
+            logger.info("[RAG_DB_RESULTS] %d initial chunks from Supabase:", len(result.nodes))
+            for n, sim in zip(result.nodes, result.similarities or []):
+                logger.info(
+                    "  • db_id=%s | unique_content_id=%s | similarity=%.4f",
+                    n.id_,
+                    (n.metadata or {}).get("unique_content_id", "N/A"),
+                    sim,
+                )
+
             return result
 
         except httpx.HTTPStatusError:
