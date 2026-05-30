@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 import os
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
@@ -39,6 +40,7 @@ HISTORY_MAX_TOKENS = _getenv_int("CHAT_HISTORY_MAX_TOKENS", 3500)
 SUMMARY_MAX_TOKENS = _getenv_int("CHAT_SUMMARY_MAX_TOKENS", 800)
 SUMMARY_REFRESH_EVERY_N_TURNS = _getenv_int("CHAT_SUMMARY_REFRESH_EVERY_N_TURNS", 6)
 MAX_MESSAGES_SAFETY = _getenv_int("CHAT_MAX_MESSAGES_SAFETY", 40)
+HISTORY_MAX_AGE_HOURS = _getenv_int("CHAT_HISTORY_MAX_AGE_HOURS", 24)
 
 
 def estimate_tokens(text: str) -> int:
@@ -106,10 +108,16 @@ class ChatMemoryService:
         conversation_id: str,
         limit: int = MAX_MESSAGES_SAFETY,
     ) -> List[Dict[str, str]]:
-        """Return most recent messages in chronological (ASC) order."""
+        """Return most recent messages in chronological (ASC) order.
+
+        Only messages newer than ``HISTORY_MAX_AGE_HOURS`` are returned so the
+        LLM context reflects a bounded recency window (Layer A).
+        """
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=HISTORY_MAX_AGE_HOURS)
         url = f"{self._rest}/chat_messages"
         params = {
             "conversation_id": f"eq.{conversation_id}",
+            "created_at": f"gte.{cutoff.isoformat()}",
             "select": "role,content,created_at",
             "order": "created_at.desc",
             "limit": str(limit),
@@ -117,6 +125,12 @@ class ChatMemoryService:
         r = self.client.get(url, params=params)
         r.raise_for_status()
         rows = r.json() or []
+        logger.debug(
+            "Layer A window: cutoff=%s hours=%d -> %d msgs",
+            cutoff.isoformat(),
+            HISTORY_MAX_AGE_HOURS,
+            len(rows),
+        )
         rows.reverse()
         return [{"role": row["role"], "content": row["content"]} for row in rows]
 
