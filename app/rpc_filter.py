@@ -36,6 +36,11 @@ def filter_empty() -> Dict[str, Any]:
     return {}
 
 
+def filter_no_topic_id() -> Dict[str, Any]:
+    """Solo chunks cuyo metadata NO incluye topic_id (contenido auxiliar)."""
+    return {"has_topic_id": False}
+
+
 def filter_by_topic_id(topic_id: str) -> Dict[str, Any]:
     """Filtro estricto por un topic_id concreto (uso futuro / API)."""
     return {"topic_id": topic_id.strip()}

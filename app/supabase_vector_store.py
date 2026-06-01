@@ -22,9 +22,9 @@ from llama_index.core.schema import BaseNode, TextNode
 from app.rpc_filter import (
     filter_empty,
     filter_has_topic_id,
+    filter_no_topic_id,
     is_retrieval_merge_with_topic_id_enabled,
     is_topic_priority_retrieval_enabled,
-    topic_priority_min_phase1_results,
 )
 
 
@@ -381,36 +381,24 @@ class SupabaseVectorStore(BasePydanticVectorStore):
         query_embedding: List[float],
         match_count: int,
     ) -> VectorStoreQueryResult:
-        min_phase1 = topic_priority_min_phase1_results()
-        always_merge = _two_phase_always_merge()
-
         phase1 = self._query_single(query_embedding, match_count, filter_has_topic_id())
         n1 = len(phase1.nodes)
         logger.info(
-            "📚 Búsqueda fase 1 (has_topic_id): %d/%d resultados",
+            "📚 Fase 1 (has_topic_id): %d/%d resultados",
             n1,
             match_count,
         )
 
-        if not always_merge and n1 >= min_phase1:
-            logger.info(
-                "✅ Fase 1 suficiente (>=%d); no se amplía búsqueda sin filtro",
-                min_phase1,
-            )
+        if n1 > 0:
             return phase1
 
-        phase2 = self._query_single(query_embedding, match_count, filter_empty())
-        n2 = len(phase2.nodes)
-        logger.info("📚 Búsqueda fase 2 (sin filtro): %d resultados", n2)
-
-        merged = self.merge_query_results(phase1, phase2, match_count)
+        logger.info("ℹ️  Fase 1 vacía; ejecutando fallback sin topic_id")
+        phase2 = self._query_single(query_embedding, match_count, filter_no_topic_id())
         logger.info(
-            "✅ Búsqueda two-phase fusionada: fase1=%d + fase2=%d → %d candidatos",
-            n1,
-            n2,
-            len(merged.nodes),
+            "📚 Fase 2 (no_topic_id, fallback): %d resultados",
+            len(phase2.nodes),
         )
-        return merged
+        return phase2
 
     def query(self, query: VectorStoreQuery, **kwargs: Any) -> VectorStoreQueryResult:
         """
