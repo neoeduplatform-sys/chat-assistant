@@ -60,3 +60,4 @@ htmlcov/
 
 # ChromaDB
 chroma_data/
+/env.bakcup
