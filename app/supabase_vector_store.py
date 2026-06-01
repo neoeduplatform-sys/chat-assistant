@@ -53,6 +53,19 @@ from app.source_labels import metadata_source_label
 logger = logging.getLogger(__name__)
 
 
+def _log_phase_chunks(tag: str, result) -> None:
+    nodes = result.nodes
+    sims = result.similarities or []
+    logger.info("[%s] %d chunks from Supabase:", tag, len(nodes))
+    for n, sim in zip(nodes, sims):
+        logger.info(
+            "  • db_id=%s | unique_content_id=%s | similarity=%.4f",
+            n.id_,
+            (n.metadata or {}).get("unique_content_id", "N/A"),
+            sim,
+        )
+
+
 class SupabaseVectorStore(BasePydanticVectorStore):
     """
     Vector Store que usa la API REST de Supabase para búsqueda vectorial.
@@ -388,6 +401,7 @@ class SupabaseVectorStore(BasePydanticVectorStore):
             n1,
             match_count,
         )
+        _log_phase_chunks("RAG_DB_RESULTS_PHASE1", phase1)
 
         if n1 > 0:
             return phase1
@@ -430,6 +444,16 @@ class SupabaseVectorStore(BasePydanticVectorStore):
                 )
 
             logger.info("✅ Búsqueda completada: %d resultado(s)", len(result.nodes))
+
+            logger.info("[RAG_DB_RESULTS] %d initial chunks from Supabase:", len(result.nodes))
+            for n, sim in zip(result.nodes, result.similarities or []):
+                logger.info(
+                    "  • db_id=%s | unique_content_id=%s | similarity=%.4f",
+                    n.id_,
+                    (n.metadata or {}).get("unique_content_id", "N/A"),
+                    sim,
+                )
+
             return result
 
         except httpx.HTTPStatusError:
