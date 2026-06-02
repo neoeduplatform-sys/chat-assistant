@@ -11,7 +11,7 @@ from app.env_utils import env_bool, env_int
 
 def is_topic_priority_retrieval_enabled() -> bool:
     """Activa búsqueda en dos fases (primero chunks con topic_id)."""
-    return env_bool("TOPIC_PRIORITY_RETRIEVAL", default=False)
+    return env_bool("TOPIC_PRIORITY_RETRIEVAL", default=True)
 
 
 def is_retrieval_merge_with_topic_id_enabled() -> bool:
