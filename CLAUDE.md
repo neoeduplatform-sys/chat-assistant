@@ -495,7 +495,29 @@ CHUNK_OVERLAP=20
 
 # LLM
 GEMINI_MODEL="models/gemini-2.5-flash"
+
+# Contabilización de tokens / costo (opcional, default 0)
+GEMINI_INPUT_PRICE_PER_1M=0     # USD por 1M tokens de entrada (prompt)
+GEMINI_OUTPUT_PRICE_PER_1M=0    # USD por 1M tokens de salida (completion)
 ```
+
+## 📊 Contabilización de Tokens y Costo
+
+Cada request a `/api/chat` puede disparar hasta 2 llamadas al LLM (síntesis RAG +
+refresco de resumen de memoria). El sistema acumula el uso de tokens por request de
+forma aislada usando `contextvars.ContextVar` (thread/async-safe), vía el
+`TokenTrackerCallbackHandler` registrado en `Settings.callback_manager`
+(`app/token_tracking.py`).
+
+- **Respuesta API**: `ChatResponse` incluye `usage` con `input_tokens`,
+  `output_tokens`, `total_tokens` y `llm_calls`. El **costo NO se expone** en la
+  respuesta.
+- **Log (fastapi_app)**: una línea por request con el costo calculado:
+  ```
+  💰 [TOKEN_USAGE] user=... course=... calls=2 input=1234 output=567 total=1801 model=... cost_usd=0.001234
+  ```
+- El costo se calcula con `GEMINI_INPUT_PRICE_PER_1M` /
+  `GEMINI_OUTPUT_PRICE_PER_1M` (USD por 1M tokens). Sin configurar → `cost_usd=0`.
 
 ---
 

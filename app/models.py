@@ -49,12 +49,24 @@ class ChatRequest(BaseModel):
         return v.strip()
 
 
+class TokenUsage(BaseModel):
+    """LLM token usage accumulated across all LLM calls in a single request."""
+    input_tokens: int = Field(0, description="Prompt/input tokens across all LLM calls this request")
+    output_tokens: int = Field(0, description="Completion/output tokens across all LLM calls this request")
+    total_tokens: int = Field(0, description="Total tokens (input + output)")
+    llm_calls: int = Field(0, description="Number of LLM calls in this request (1 = synthesis, 2 = + summary refresh)")
+
+
 class ChatResponse(BaseModel):
     """Response model for chat endpoint"""
     answer: str = Field(..., description="AI-generated answer")
     sources: Optional[List[str]] = Field(default=None, description="Source documents used")
     course_id: str = Field(..., description="Course identifier")
     user_id: Optional[str] = Field(None, description="User identifier if provided")
+    usage: Optional[TokenUsage] = Field(
+        None,
+        description="Token usage for this request; cost is logged server-side only",
+    )
 
 
 class ChatHistoryMessageItem(BaseModel):

@@ -50,7 +50,14 @@ from app.models import (
     CourseConfigUpdate,
     CourseConfigResponse,
     CourseConfigList,
-    ErrorResponse
+    ErrorResponse,
+    TokenUsage,
+)
+from app.token_tracking import (
+    TokenTrackerCallbackHandler,
+    start_request_tracking,
+    get_current_usage,
+    compute_cost,
 )
 
 # Cargar variables de entorno
@@ -280,6 +287,12 @@ async def initialize_query_engine():
         # 3. Configurar LlamaIndex
         Settings.llm = GoogleGenAI(model=model)
         Settings.embed_model = GoogleGenAIEmbedding(model_name=embedding_model)
+
+        # Registrar callback global para contabilizar tokens por request.
+        # Cubre tanto la síntesis RAG como el resumen de memoria (ambos usan Settings.llm).
+        from llama_index.core.callbacks import CallbackManager
+        Settings.callback_manager = CallbackManager([TokenTrackerCallbackHandler()])
+        logger.info("📊 TokenTrackerCallbackHandler registrado en Settings.callback_manager")
 
         # 4. Conectar a Supabase usando API REST
         logger.info("🔌 Conectando a Supabase vía API REST...")
@@ -660,6 +673,9 @@ async def chat_endpoint(
 
     logger.info(f"📩 Pregunta recibida: {request.question} | Course: {request.course_id}")
 
+    # Iniciar contabilización de tokens aislada por request (ContextVar).
+    start_request_tracking()
+
     try:
         # 1. Obtener configuración del curso
         course_service = get_course_config_service()
@@ -886,11 +902,31 @@ async def chat_endpoint(
             except Exception as exc:
                 logger.error("⚠️  Fallo en refresco de resumen: %s", exc, exc_info=True)
 
+        # 10. Contabilizar tokens acumulados en este request y registrar costo.
+        usage_response = None
+        acc = get_current_usage()
+        if acc is not None:
+            model_name = os.getenv("GEMINI_MODEL", "models/gemini-1.5-pro-latest")
+            cost = compute_cost(model_name, acc.input_tokens, acc.output_tokens)
+            logger.info(
+                "💰 [TOKEN_USAGE] user=%s course=%s calls=%d input=%d output=%d total=%d model=%s cost_usd=%.6f",
+                request.user_id, request.course_id, acc.llm_calls,
+                acc.input_tokens, acc.output_tokens, acc.total_tokens,
+                model_name, cost,
+            )
+            usage_response = TokenUsage(
+                input_tokens=acc.input_tokens,
+                output_tokens=acc.output_tokens,
+                total_tokens=acc.total_tokens,
+                llm_calls=acc.llm_calls,
+            )
+
         return ChatResponse(
             answer=answer,
             sources=sources,
             course_id=request.course_id,
-            user_id=request.user_id
+            user_id=request.user_id,
+            usage=usage_response,
         )
 
     except HTTPException:
