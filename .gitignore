@@ -6,6 +6,7 @@ __pycache__/
 *.py[cod]
 *$py.class
 *.so
+*.txt
 .Python
 build/
 develop-eggs/
@@ -59,3 +60,4 @@ htmlcov/
 
 # ChromaDB
 chroma_data/
+/env.bakcup

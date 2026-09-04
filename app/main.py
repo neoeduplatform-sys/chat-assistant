@@ -8,22 +8,57 @@ que utiliza RAG (Retrieval-Augmented Generation) con Gemini y Supabase (pgvector
 
 import os
 import logging
-from typing import Optional
+from typing import Any, Optional, List
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, status, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 from dotenv import load_dotenv
 from pathlib import Path
+import httpx
 
 from llama_index.core import VectorStoreIndex, Settings
+from llama_index.core.schema import QueryBundle
+from llama_index.core.query_engine import RetrieverQueryEngine
+from llama_index.core.response_synthesizers import ResponseMode
 from llama_index.llms.google_genai import GoogleGenAI
 from llama_index.embeddings.google_genai import GoogleGenAIEmbedding
 
 from app.supabase_vector_store import SupabaseVectorStore
+from app.course_config import get_course_config_service, resolve_course_id
+from app.source_labels import metadata_source_label
+from app.cohere_rerank import build_retrieval_postprocessors, effective_similarity_top_k
+from app.auth import AuthenticatedUser, get_current_user
+from app.chat_memory_service import (
+    get_chat_memory_service,
+    summarize_conversation,
+    estimate_tokens,
+    HISTORY_MAX_TOKENS,
+    MAX_MESSAGES_SAFETY,
+)
+from app.models import (
+    ChatRequest,
+    ChatResponse,
+    ChatHistoryResponse,
+    ChatHistoryMessageItem,
+    ChatScopeResponse,
+    ChatScopeMessageItem,
+    CourseConfigCreate,
+    CourseConfigUpdate,
+    CourseConfigResponse,
+    CourseConfigList,
+    ErrorResponse,
+    TokenUsage,
+)
+from app.token_tracking import (
+    TokenTrackerCallbackHandler,
+    start_request_tracking,
+    get_current_usage,
+    compute_cost,
+)
 
 # Cargar variables de entorno
 load_dotenv()
@@ -34,6 +69,64 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+
+def _log_rag_vs_synthesis_context(
+    retrieval_query_str: str,
+    composed_query: str,
+    retrieved_nodes: List[Any],
+) -> None:
+    """Logs explícitos: pregunta limpia (retrieve) vs texto enriquecido (síntesis) y resumen de chunks."""
+    max_synth = int(os.getenv("CHAT_LOG_SYNTHESIS_BODY_MAX_CHARS", "20000"))
+    preview = int(os.getenv("CHAT_LOG_CHUNK_PREVIEW_CHARS", "200"))
+
+    logger.info(
+        "========== [RAG_RETRIEVAL_QUERY] Pregunta limpia usada para embedding y RPC "
+        "(%d caracteres) ==========\n%s\n"
+        "========== [RAG_RETRIEVAL_QUERY] fin ==========",
+        len(retrieval_query_str),
+        retrieval_query_str,
+    )
+
+    synth_body = composed_query
+    if len(synth_body) > max_synth:
+        logger.info(
+            "========== [LLM_SYNTHESIS_QUERY] Contexto enriquecido para el agente "
+            "(truncado en log: total %d caracteres; límite CHAT_LOG_SYNTHESIS_BODY_MAX_CHARS=%d) ==========\n%s\n"
+            "... [log truncado]\n"
+            "========== [LLM_SYNTHESIS_QUERY] fin (vista parcial) ==========",
+            len(synth_body),
+            max_synth,
+            synth_body[:max_synth],
+        )
+    else:
+        logger.info(
+            "========== [LLM_SYNTHESIS_QUERY] Contexto enriquecido para el agente "
+            "({query_str} del template QA; %d caracteres) ==========\n%s\n"
+            "========== [LLM_SYNTHESIS_QUERY] fin ==========",
+            len(synth_body),
+            synth_body,
+        )
+
+    logger.info(
+        "[RAG_RETRIEVED_CHUNKS] Nodos recuperados para armar context_str del LLM: %d",
+        len(retrieved_nodes),
+    )
+    for i, nws in enumerate(retrieved_nodes):
+        node = nws.node
+        score = getattr(nws, "score", None)
+        text = (node.get_content() or "").replace("\n", " ").strip()
+        snippet = text[:preview] + ("..." if len(text) > preview else "")
+        md = getattr(node, "metadata", None) or {}
+        src = metadata_source_label(md) or "(sin metadata de título)"
+        logger.info(
+            "[RAG_CHUNK_%d] similarity/score=%s | fuente=%s | extracto=%s",
+            i,
+            score,
+            src,
+            snippet,
+        )
+
 
 # Variable global para el motor de consulta
 query_engine = None
@@ -85,6 +178,52 @@ class HealthResponse(BaseModel):
     collection_count: Optional[int] = None
 
 
+class ContentIngestPayload(BaseModel):
+    """Modelo para el payload de ingesta de contenido."""
+    unique_content_id: str = Field(..., description="ID único del contenido")
+    course_id: str = Field(..., description="ID único del curso")
+    course_name: str = Field(..., description="Nombre del curso")
+    topic_id: str = Field(..., description="ID del tópico")
+    model: str = Field(..., description="Modelo del contenido")
+    version: str = Field(..., description="Versión del contenido")
+    title: str = Field(..., description="Título del contenido")
+    module: str = Field(..., description="Módulo del contenido")
+    notes: str = Field(..., description="Notas adicionales")
+    version_data: str = Field(..., description="Datos de la versión")
+    content: str = Field(..., min_length=1, description="Contenido principal a indexar")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "unique_content_id": "course_123_topic_456",
+                "course_id": "mantenimiento-mecanico",
+                "course_name": "Mantenimiento Mecánico Automotriz",
+                "topic_id": "topic_456",
+                "model": "standard",
+                "version": "1.0",
+                "title": "Introducción al Mantenimiento",
+                "module": "Módulo 1",
+                "notes": "Versión inicial del contenido",
+                "version_data": "2025-01-15",
+                "content": "El mantenimiento mecánico automotriz es fundamental..."
+            }
+        }
+
+
+class ContentIngestResponse(BaseModel):
+    """Modelo para la respuesta de ingesta de contenido."""
+    message: str
+    job_id: Optional[int] = None
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "message": "Content received and queued for processing.",
+                "job_id": 123
+            }
+        }
+
+
 # ============================================================================
 # LIFECYCLE MANAGEMENT
 # ============================================================================
@@ -128,6 +267,7 @@ async def initialize_query_engine():
         embed_dim = int(os.getenv("EMBEDDING_DIMENSIONS", "3072"))
         match_threshold = float(os.getenv("MATCH_THRESHOLD", "0.5"))
         similarity_top_k = int(os.getenv("SIMILARITY_TOP_K", "3"))
+        logger.info(f"🔧 Working with function: {rpc_function}")
 
         if not supabase_url or not supabase_key:
             logger.error("❌ SUPABASE_URL o SUPABASE_SERVICE_ROLE_KEY no están configuradas.")
@@ -147,6 +287,12 @@ async def initialize_query_engine():
         # 3. Configurar LlamaIndex
         Settings.llm = GoogleGenAI(model=model)
         Settings.embed_model = GoogleGenAIEmbedding(model_name=embedding_model)
+
+        # Registrar callback global para contabilizar tokens por request.
+        # Cubre tanto la síntesis RAG como el resumen de memoria (ambos usan Settings.llm).
+        from llama_index.core.callbacks import CallbackManager
+        Settings.callback_manager = CallbackManager([TokenTrackerCallbackHandler()])
+        logger.info("📊 TokenTrackerCallbackHandler registrado en Settings.callback_manager")
 
         # 4. Conectar a Supabase usando API REST
         logger.info("🔌 Conectando a Supabase vía API REST...")
@@ -171,7 +317,7 @@ async def initialize_query_engine():
 
         # Template de sistema en español
         qa_prompt_template = PromptTemplate(
-            "Eres un asistente educativo experto en mantenimiento mecánico automotriz. "
+            "Eres un educador experto en mantenimiento mecánico automotriz. "
             "Tu objetivo es ayudar a estudiantes a aprender sobre este tema.\n\n"
             "IMPORTANTE: Siempre responde en español, sin importar el idioma de la pregunta.\n\n"
             "Contexto de referencia:\n"
@@ -181,14 +327,19 @@ async def initialize_query_engine():
             "1. Responde ÚNICAMENTE en español\n"
             "2. Usa el contexto proporcionado para dar respuestas precisas\n"
             "3. Si no encuentras la respuesta en el contexto, indícalo claramente\n"
-            "4. Sé claro, educativo y profesional\n\n"
+            "4. Da respuestas directas, como el dueño del conocimiento, evita frases como -El constexto proporcionado- o -Según el contexto-\n"
+            "5. Sé claro, educativo y profesional\n\n"
             "Respuesta en español:"
         )
 
+        retrieval_postprocessors = build_retrieval_postprocessors()
+        logger.info("Retrieval postprocessors: %d", len(retrieval_postprocessors))
+
         query_engine = index.as_query_engine(
             streaming=False,
-            similarity_top_k=similarity_top_k,
+            similarity_top_k=effective_similarity_top_k(),
             text_qa_template=qa_prompt_template,
+            node_postprocessors=retrieval_postprocessors,
         )
 
         logger.info("✅ Motor de consulta inicializado correctamente.")
@@ -267,6 +418,7 @@ async def root():
             "version": "1.0.0",
             "endpoints": {
                 "chat": "/api/chat",
+                "chat_history": "/api/chat/history",
                 "health": "/health",
                 "docs": "/docs"
             },
@@ -305,59 +457,835 @@ async def health_check():
         )
 
 
-@app.post("/api/chat", response_model=QueryResponse)
-async def chat_endpoint(request: QueryRequest):
+@app.get("/api/chat/history", response_model=ChatHistoryResponse)
+async def get_chat_history(
+    limit: int = Query(
+        MAX_MESSAGES_SAFETY,
+        ge=1,
+        le=MAX_MESSAGES_SAFETY,
+        description="Max messages per page",
+    ),
+    offset: int = Query(
+        0,
+        ge=0,
+        description="Pagination offset (from start if tail=false, from end if tail=true)",
+    ),
+    tail: bool = Query(
+        True,
+        description="If true, return the newest messages first (offset skips older pages)",
+    ),
+    current_user: AuthenticatedUser = Depends(get_current_user),
+):
     """
-    Endpoint principal del chatbot.
+    Historial persistido para el usuario autenticado (capas A y B).
 
-    Recibe una pregunta del usuario y devuelve una respuesta
-    generada usando RAG (Retrieval-Augmented Generation).
+    ``user_id`` y ``course_id`` se extraen del JWT validado: no se aceptan
+    como query params para evitar que un usuario consulte historiales ajenos.
+    Si aún no existe hilo en base de datos, devuelve mensajes vacíos y
+    ``conversation_id`` nulo.
 
-    **Parámetros:**
-    - `question`: La pregunta del usuario sobre el contenido del curso
+    Con ``tail=true`` (defecto), ``offset=0`` devuelve la página más reciente
+    (p. ej. los últimos 40 mensajes), no los más antiguos.
+    """
+    uid = current_user.user_id.strip()
+    cid_raw = current_user.course_id.strip()
+    cid = resolve_course_id(cid_raw)
+
+    course_service = get_course_config_service()
+    course_config = course_service.get_course_config(cid, use_cache=True)
+    if not course_config:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Course '{cid}' not found or inactive.",
+        )
+
+    try:
+        svc = get_chat_memory_service()
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Chat memory storage is not configured (Supabase credentials missing).",
+        )
+
+    conversation_id = svc.find_conversation_id(uid, cid)
+    if not conversation_id:
+        return ChatHistoryResponse(
+            conversation_id=None,
+            course_id=cid,
+            user_id=uid,
+            messages=[],
+            summary=None,
+            total_count=0,
+            limit=limit,
+            offset=offset,
+            has_more=False,
+        )
+
+    total_count = svc.count_messages(conversation_id)
+    if tail:
+        rows = svc.list_messages_tail_chronological(
+            conversation_id,
+            limit=limit,
+            offset_from_end=offset,
+            total_count=total_count,
+        )
+        has_more = svc.tail_page_start_index(total_count, limit, offset) > 0
+    else:
+        rows = svc.list_messages_chronological(
+            conversation_id, limit=limit, offset=offset
+        )
+        has_more = False
+    summary_raw = svc.get_summary(uid, cid)
+    summary_out = summary_raw.strip() if summary_raw else None
+
+    messages_out: List[ChatHistoryMessageItem] = []
+    for row in rows:
+        messages_out.append(
+            ChatHistoryMessageItem(
+                id=int(row["id"]),
+                role=row["role"],
+                content=row["content"],
+                created_at=row["created_at"],
+            )
+        )
+
+    if not tail:
+        has_more = offset + len(messages_out) < total_count
+
+    return ChatHistoryResponse(
+        conversation_id=conversation_id,
+        course_id=cid,
+        user_id=uid,
+        messages=messages_out,
+        summary=summary_out if summary_out else None,
+        total_count=total_count,
+        limit=limit,
+        offset=offset,
+        has_more=has_more,
+    )
+
+
+@app.get("/api/chat/scope", response_model=ChatScopeResponse)
+async def get_chat_scope(
+    question: Optional[str] = Query(
+        None,
+        min_length=1,
+        max_length=5000,
+        description="Pregunta hipotética opcional; si se envía, la respuesta incluye composed_query",
+    ),
+    current_user: AuthenticatedUser = Depends(get_current_user),
+):
+    """
+    Previsualiza el "scope" conversacional (capas A + B) que /api/chat fusionaría
+    con la búsqueda RAG para la próxima pregunta de este usuario en este curso.
+
+    Solo lectura: no persiste mensajes, no llama al LLM y no realiza búsqueda
+    vectorial. ``user_id`` y ``course_id`` se extraen del JWT validado (mismo
+    patrón anti-suplantación que /api/chat/history).
+
+    Si se envía ``question``, ``composed_query`` contiene el ``query_str``
+    exacto que /api/chat construiría para esa pregunta.
+    """
+    uid = current_user.user_id.strip()
+    cid = resolve_course_id(current_user.course_id.strip())
+
+    course_service = get_course_config_service()
+    course_config = course_service.get_course_config(cid, use_cache=True)
+    if not course_config:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Course '{cid}' not found or inactive.",
+        )
+
+    try:
+        svc = get_chat_memory_service()
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Chat memory storage is not configured (Supabase credentials missing).",
+        )
+
+    q = question.strip() if question else None
+
+    conversation_id = svc.find_conversation_id(uid, cid)
+    summary_raw = svc.get_summary(uid, cid)
+    summary_out = summary_raw.strip() if summary_raw else None
+
+    if conversation_id:
+        recent = svc.get_recent_messages(conversation_id, limit=MAX_MESSAGES_SAFETY)
+        trimmed = svc.trim_to_token_budget(recent, max_tokens=HISTORY_MAX_TOKENS)
+    else:
+        trimmed = []
+
+    history_items = [
+        ChatScopeMessageItem(role=m["role"], content=m["content"]) for m in trimmed
+    ]
+    # +4 per message matches the role-tag overhead used inside trim_to_token_budget
+    history_tokens = sum(estimate_tokens(m["content"]) + 4 for m in trimmed)
+    summary_tokens = estimate_tokens(summary_out or "")
+
+    composed = None
+    if q:
+        composed = svc.build_composed_query_str(summary_out or "", trimmed, q)
+
+    return ChatScopeResponse(
+        conversation_id=conversation_id,
+        course_id=cid,
+        user_id=uid,
+        summary=summary_out,
+        summary_tokens=summary_tokens,
+        history=history_items,
+        history_message_count=len(history_items),
+        history_tokens=history_tokens,
+        history_max_tokens_budget=HISTORY_MAX_TOKENS,
+        question=q,
+        composed_query=composed,
+    )
+
+
+@app.post("/api/chat", response_model=ChatResponse)
+async def chat_endpoint(
+    request: ChatRequest,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+):
+    """
+    Endpoint principal del chatbot con soporte multi-curso.
+
+    Recibe una pregunta del usuario y devuelve una respuesta generada usando
+    RAG (Retrieval-Augmented Generation) con el contexto del curso específico.
+
+    **Autenticación:** requiere ``Authorization: Bearer <JWT>``. El ``user_id``
+    y ``course_id`` se obtienen del token validado y tienen prioridad sobre
+    los valores enviados en el cuerpo del request (anti-suplantación).
 
     **Retorna:**
     - `answer`: La respuesta generada por el chatbot
     - `sources`: Lista de fuentes utilizadas (opcional)
+    - `course_id`: ID del curso usado (del token)
+    - `user_id`: ID del usuario (del token)
     """
-    if query_engine is None:
-        raise HTTPException(
-            status_code=503,
-            detail="El motor de consulta no está disponible. Verifica los logs del servidor."
-        )
+    # Priorizar IDs del token sobre los del body para evitar suplantación.
+    course_id = resolve_course_id(current_user.course_id)
+    user_id = current_user.user_id
 
-    logger.info(f"📩 Pregunta recibida: {request.question}")
+    # Reemplazar los IDs del request con los del token antes de procesar.
+    request = request.model_copy(update={"course_id": course_id, "user_id": user_id})
+
+    logger.info(f"📩 Pregunta recibida: {request.question} | Course: {request.course_id}")
+
+    # Iniciar contabilización de tokens aislada por request (ContextVar).
+    start_request_tracking()
 
     try:
-        # Realizar la consulta
-        response = query_engine.query(request.question)
+        # 1. Obtener configuración del curso
+        course_service = get_course_config_service()
+        course_config = course_service.get_course_config(request.course_id, use_cache=True)
 
-        # Extraer la respuesta
+        if not course_config:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Course '{request.course_id}' not found or inactive."
+            )
+
+        logger.info(f"✅ Course config retrieved: {course_config['course_name']}")
+        logger.info(f"   Table: {course_config['table_name']}")
+        logger.info(f"   RPC: {course_config['rpc_function']}")
+
+        # 2. Crear vector store dinámico para este curso
+        supabase_url = os.getenv("SUPABASE_URL")
+        supabase_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+        embed_dim = int(os.getenv("EMBEDDING_DIMENSIONS", "3072"))
+        match_threshold = float(os.getenv("MATCH_THRESHOLD", "0.5"))
+        similarity_top_k = int(os.getenv("SIMILARITY_TOP_K", "3"))
+
+        vector_store = SupabaseVectorStore(
+            supabase_url=supabase_url,
+            supabase_key=supabase_key,
+            table_name=course_config['table_name'],
+            rpc_function_name=course_config['rpc_function'],
+            embed_dim=embed_dim,
+            match_threshold=match_threshold,
+        )
+
+        # 3. Crear índice vectorial dinámico
+        index = VectorStoreIndex.from_vector_store(vector_store=vector_store)
+
+        # 4. Crear query engine con prompt personalizado
+        from llama_index.core.prompts import PromptTemplate
+
+        qa_prompt_template = PromptTemplate(
+            f"Eres un educador experto en {course_config['course_name']}. "
+            "Tu objetivo es ayudar a estudiantes a aprender sobre este tema.\n\n"
+            "IMPORTANTE: Siempre responde en español, sin importar el idioma de la pregunta.\n\n"
+            "Contexto de referencia:\n"
+            "{context_str}\n\n"
+            "Pregunta: {query_str}\n\n"
+            "Instrucciones:\n"
+            "1. Responde ÚNICAMENTE en español\n"
+            "2. Usa el contexto proporcionado para dar respuestas precisas\n"
+            "3. Si no encuentras la respuesta en el contexto, indícalo claramente\n"
+            "4. Da respuestas directas, como el dueño del conocimiento, evita frases como -El constexto proporcionado- o -Según el contexto-\n"
+            "5. Sé claro, educativo y profesional\n\n"
+            "Respuesta en español:"
+        )
+
+        retrieval_postprocessors = build_retrieval_postprocessors()
+        logger.info(
+            "Retrieval postprocessors for course %s: %d",
+            request.course_id,
+            len(retrieval_postprocessors),
+        )
+
+        retriever = index.as_retriever(similarity_top_k=effective_similarity_top_k())
+        course_query_engine = RetrieverQueryEngine.from_args(
+            retriever=retriever,
+            text_qa_template=qa_prompt_template,
+            response_mode=ResponseMode.COMPACT,
+            node_postprocessors=retrieval_postprocessors,
+            streaming=False,
+        )
+
+        # 4.5 Capas A (historial) y B (resumen) — solo si hay user_id
+        memory_ctx = None
+        if request.user_id:
+            try:
+                memory_service = get_chat_memory_service()
+                conversation_id = memory_service.resolve_conversation(
+                    request.user_id, request.course_id
+                )
+                summary = memory_service.get_summary(request.user_id, request.course_id)
+                recent = memory_service.get_recent_messages(
+                    conversation_id, limit=MAX_MESSAGES_SAFETY
+                )
+                trimmed = memory_service.trim_to_token_budget(
+                    recent, max_tokens=HISTORY_MAX_TOKENS
+                )
+                composed_query = memory_service.build_composed_query_str(
+                    summary, trimmed, request.question
+                )
+                memory_ctx = {
+                    "service": memory_service,
+                    "conversation_id": conversation_id,
+                    "summary": summary,
+                }
+                logger.info(
+                    "🧠 Memoria cargada | conv=%s | summary=%d chars | history=%d/%d msgs",
+                    conversation_id,
+                    len(summary or ""),
+                    len(trimmed),
+                    len(recent),
+                )
+            except Exception as mem_exc:
+                logger.error("⚠️  Fallo cargando memoria, usando solo RAG: %s", mem_exc, exc_info=True)
+                memory_ctx = None
+                composed_query = request.question
+        else:
+            composed_query = request.question
+
+        # 4.6 Persistir el mensaje del usuario ANTES de llamar al LLM
+        if memory_ctx is not None:
+            try:
+                memory_ctx["service"].persist_message(
+                    memory_ctx["conversation_id"], "user", request.question
+                )
+            except Exception as exc:
+                logger.error("⚠️  No se pudo guardar mensaje de usuario: %s", exc, exc_info=True)
+
+        # 5. Recuperación con pregunta limpia (embedding/RPC) y síntesis con contexto conversacional
+        retrieval_query_str = request.question.strip()
+        retrieval_bundle = QueryBundle(query_str=retrieval_query_str)
+        synthesis_bundle = QueryBundle(query_str=composed_query)
+        if composed_query != retrieval_query_str:
+            logger.info(
+                "🧠 Retrieve usa pregunta limpia; síntesis usa contexto enriquecido "
+                "(limpio %d chars vs enriquecido %d chars)",
+                len(retrieval_query_str),
+                len(composed_query),
+            )
+        else:
+            logger.info(
+                "🧠 Sin bloque de memoria en esta petición: retrieve y síntesis usan la misma cadena (%d chars)",
+                len(retrieval_query_str),
+            )
+        logger.info("🔍 Iniciando búsqueda vectorial…")
+        retrieved_nodes = course_query_engine.retrieve(retrieval_bundle)
+        logger.info(
+            "[RAG_FINAL_CHUNKS] %d chunks selected for LLM (post-rerank if enabled):",
+            len(retrieved_nodes),
+        )
+        for nws in retrieved_nodes:
+            md = getattr(nws.node, "metadata", {}) or {}
+            logger.info(
+                "  • db_id=%s | unique_content_id=%s | score=%.4f",
+                nws.node.node_id,
+                md.get("unique_content_id", "N/A"),
+                float(nws.score) if nws.score is not None else 0.0,
+            )
+        _log_rag_vs_synthesis_context(retrieval_query_str, composed_query, retrieved_nodes)
+        logger.info("🔍 Iniciando síntesis (LLM) con contexto enriquecido…")
+        response = course_query_engine.synthesize(synthesis_bundle, retrieved_nodes)
+        logger.info("✅ Query ejecutado exitosamente")
+
+        # 6. Extraer la respuesta
         answer = str(response)
 
-        # Extraer fuentes si están disponibles
+        # 7. Extraer fuentes si están disponibles
         sources = []
+        source_count = 0
         if hasattr(response, 'source_nodes'):
+            source_count = len(response.source_nodes)
+            logger.info(f"📚 Source nodes encontrados: {source_count}")
+
             for node in response.source_nodes:
                 if hasattr(node, 'node') and hasattr(node.node, 'metadata'):
-                    metadata = node.node.metadata
-                    if 'file_name' in metadata:
-                        sources.append(metadata['file_name'])
+                    label = metadata_source_label(node.node.metadata)
+                    if label:
+                        sources.append(label)
 
         # Eliminar duplicados de fuentes
         sources = list(set(sources)) if sources else None
 
+        # 8. Validar si la base de datos está vacía
+        if source_count == 0:
+            logger.warning(f"⚠️  Base de datos vacía: No se encontraron documentos relevantes")
+            logger.warning(f"   La respuesta de Gemini puede ser generada sin contexto del curso")
+            # Agregar nota a la respuesta para el usuario
+            answer = (
+                f"{answer}\n\n"
+                "**Nota**: La base de conocimiento está actualmente vacía. "
+                "Esta respuesta fue generada sin contexto específico del curso."
+            )
+
         logger.info(f"✅ Respuesta generada exitosamente.")
         if sources:
             logger.info(f"📚 Fuentes utilizadas: {sources}")
+        elif source_count > 0:
+            logger.warning(
+                "📚 %d nodos recuperados pero sin etiqueta de fuente en metadata",
+                source_count,
+            )
+        else:
+            logger.info("📚 Sin nodos recuperados para esta consulta")
 
-        return QueryResponse(answer=answer, sources=sources)
+        # 9. Persistir respuesta del asistente y refrescar resumen si toca
+        if memory_ctx is not None:
+            svc = memory_ctx["service"]
+            conv_id = memory_ctx["conversation_id"]
+            try:
+                svc.persist_message(conv_id, "assistant", answer)
+            except Exception as exc:
+                logger.error("⚠️  No se pudo guardar respuesta del asistente: %s", exc, exc_info=True)
 
+            try:
+                mem_row = svc.get_memory_row(request.user_id, request.course_id)
+                last_count = (mem_row or {}).get("message_count_at_last_summary", 0) or 0
+                total_messages = svc.count_messages(conv_id)
+                if svc.should_refresh_summary(total_messages, last_count):
+                    logger.info(
+                        "🧠 Refrescando resumen (total=%d, last=%d)",
+                        total_messages, last_count,
+                    )
+                    recent_for_summary = svc.get_recent_messages(
+                        conv_id, limit=MAX_MESSAGES_SAFETY
+                    )
+                    new_summary = summarize_conversation(
+                        memory_ctx["summary"], recent_for_summary
+                    )
+                    if new_summary and new_summary != memory_ctx["summary"]:
+                        svc.upsert_summary(
+                            request.user_id,
+                            request.course_id,
+                            new_summary,
+                            total_messages,
+                        )
+                        logger.info("🧠 Resumen actualizado (%d chars)", len(new_summary))
+            except Exception as exc:
+                logger.error("⚠️  Fallo en refresco de resumen: %s", exc, exc_info=True)
+
+        # 10. Contabilizar tokens acumulados en este request y registrar costo.
+        usage_response = None
+        acc = get_current_usage()
+        if acc is not None:
+            model_name = os.getenv("GEMINI_MODEL", "models/gemini-1.5-pro-latest")
+            cost = compute_cost(model_name, acc.input_tokens, acc.output_tokens)
+            logger.info(
+                "💰 [TOKEN_USAGE] user=%s course=%s calls=%d input=%d output=%d total=%d model=%s cost_usd=%.6f",
+                request.user_id, request.course_id, acc.llm_calls,
+                acc.input_tokens, acc.output_tokens, acc.total_tokens,
+                model_name, cost,
+            )
+            usage_response = TokenUsage(
+                input_tokens=acc.input_tokens,
+                output_tokens=acc.output_tokens,
+                total_tokens=acc.total_tokens,
+                llm_calls=acc.llm_calls,
+            )
+
+        return ChatResponse(
+            answer=answer,
+            sources=sources,
+            course_id=request.course_id,
+            user_id=request.user_id,
+            usage=usage_response,
+        )
+
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"❌ Error al procesar la consulta: {e}", exc_info=True)
         raise HTTPException(
-            status_code=500,
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error interno al procesar la pregunta: {str(e)}"
+        )
+
+
+@app.post("/api/v1/ingest", response_model=ContentIngestResponse, status_code=status.HTTP_202_ACCEPTED)
+async def ingest_content(payload: ContentIngestPayload):
+    """
+    Endpoint para ingesta asíncrona de contenido.
+
+    Recibe contenido desde un sistema externo y lo encola para procesamiento.
+    El contenido será indexado de forma asíncrona por un worker en background.
+
+    **Comportamiento:**
+    - Valida el payload recibido
+    - Valida que el curso existe y está activo
+    - Crea un job en la cola de ingesta
+    - Retorna inmediatamente con 202 Accepted
+    - El worker procesará el job de forma asíncrona:
+      1. Eliminará el contenido antiguo con el mismo unique_content_id
+      2. Indexará el nuevo contenido
+      3. Actualizará el estado del job
+
+    **Parámetros:**
+    - `unique_content_id`: ID único para identificar y actualizar el contenido
+    - `course_id`: ID del curso (debe existir en course_configurations)
+    - `content`: Texto principal a indexar
+    - `topic_id`, `version`, `title`: Metadata importante para filtrado
+    - Otros campos: Metadata adicional almacenada con el contenido
+
+    **Retorna:**
+    - `message`: Confirmación de que el contenido fue encolado
+    - `job_id`: ID del job creado para seguimiento
+    """
+    # Validar que el contenido no esté vacío
+    if not payload.unique_content_id or not payload.content:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="unique_content_id and content are required and cannot be empty."
+        )
+
+    # Validar que el curso existe
+    try:
+        course_service = get_course_config_service()
+        payload_course_id = resolve_course_id(payload.course_id)
+        course_config = course_service.get_course_config(payload_course_id, use_cache=True)
+
+        if not course_config:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Course '{payload_course_id}' not found or inactive. "
+                       f"Please create the course configuration first via POST /api/v1/courses"
+            )
+
+        logger.info(f"✅ Course validated for ingestion: {course_config['course_name']}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error validating course: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error validating course configuration."
+        )
+
+    # Obtener configuración de Supabase
+    supabase_url = os.getenv("SUPABASE_URL")
+    supabase_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+
+    if not supabase_url or not supabase_key:
+        logger.error("❌ SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY not configured")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Server configuration error. Please contact administrator."
+        )
+
+    try:
+        # Crear el payload del job (convertir a dict)
+        job_payload = payload.model_dump()
+
+        # Preparar datos para insertar en la tabla de jobs
+        job_data = {
+            "status": "pending",
+            "payload": job_payload
+        }
+
+        # Headers para autenticación con Supabase
+        headers = {
+            "apikey": supabase_key,
+            "Authorization": f"Bearer {supabase_key}",
+            "Content-Type": "application/json",
+            "Prefer": "return=representation"  # Para obtener el ID del job insertado
+        }
+
+        # Insertar el job en la tabla usando httpx
+        url = f"{supabase_url.rstrip('/')}/rest/v1/ingestion_jobs"
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(url, json=job_data, headers=headers)
+            response.raise_for_status()
+
+            # Obtener el ID del job insertado
+            result = response.json()
+            job_id = result[0].get("id") if result and len(result) > 0 else None
+
+            logger.info(
+                f"✅ Content queued for ingestion. "
+                f"Job ID: {job_id}, "
+                f"unique_content_id: {payload.unique_content_id}"
+            )
+
+            return ContentIngestResponse(
+                message="Content received and queued for processing.",
+                job_id=job_id
+            )
+
+    except httpx.HTTPStatusError as e:
+        logger.error(f"❌ HTTP error queuing ingestion job: {e.response.status_code} - {e.response.text}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to queue content for processing. Please try again."
+        )
+    except Exception as e:
+        logger.error(f"❌ Error queuing ingestion job: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to queue content for processing."
+        )
+
+
+# ============================================================================
+# COURSE MANAGEMENT ENDPOINTS
+# ============================================================================
+
+@app.get(
+    "/api/v1/courses",
+    response_model=CourseConfigList,
+    tags=["Course Management"],
+    summary="List all course configurations"
+)
+async def list_courses(active_only: bool = True):
+    """
+    List all course configurations.
+
+    **Parameters:**
+    - `active_only`: If true, only return active courses (default: true)
+
+    **Returns:**
+    - List of course configurations with metadata
+    """
+    try:
+        course_service = get_course_config_service()
+        courses = course_service.list_course_configs(active_only=active_only)
+
+        return CourseConfigList(
+            courses=[CourseConfigResponse(**course) for course in courses],
+            total=len(courses)
+        )
+
+    except Exception as e:
+        logger.error(f"❌ Error listing courses: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to retrieve course list."
+        )
+
+
+@app.get(
+    "/api/v1/courses/{course_id}",
+    response_model=CourseConfigResponse,
+    tags=["Course Management"],
+    summary="Get specific course configuration"
+)
+async def get_course(course_id: str):
+    """
+    Get a specific course configuration by ID.
+
+    **Parameters:**
+    - `course_id`: The unique course identifier
+
+    **Returns:**
+    - Course configuration details
+    """
+    try:
+        course_service = get_course_config_service()
+        course = course_service.get_course_config(course_id, use_cache=True)
+
+        if not course:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Course '{course_id}' not found or inactive."
+            )
+
+        return CourseConfigResponse(**course)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error retrieving course {course_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to retrieve course configuration."
+        )
+
+
+@app.post(
+    "/api/v1/courses",
+    response_model=CourseConfigResponse,
+    status_code=status.HTTP_201_CREATED,
+    tags=["Course Management"],
+    summary="Create new course configuration"
+)
+async def create_course(course_data: CourseConfigCreate):
+    """
+    Create a new course configuration.
+
+    **Parameters:**
+    - `course_data`: Course configuration details including:
+      - `course_id`: Unique identifier (required)
+      - `course_name`: Human-readable name
+      - `course_slug`: URL-friendly slug
+      - `table_name`: Supabase table name for vectors
+      - `rpc_function`: Supabase RPC function for search
+      - `active`: Whether the course is active (default: true)
+      - `description`: Optional description
+      - `metadata`: Optional additional metadata
+
+    **Returns:**
+    - Created course configuration
+
+    **Note:**
+    - The course_id must be unique
+    - Make sure the corresponding Supabase table and RPC function exist
+    """
+    try:
+        course_service = get_course_config_service()
+        created_course = course_service.create_course_config(course_data.model_dump())
+
+        logger.info(f"✅ Course created: {course_data.course_id}")
+        return CourseConfigResponse(**created_course)
+
+    except ValueError as e:
+        # Course ID already exists
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(e)
+        )
+    except ValidationError as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Validation error: {str(e)}"
+        )
+    except Exception as e:
+        logger.error(f"❌ Error creating course: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to create course configuration."
+        )
+
+
+@app.put(
+    "/api/v1/courses/{course_id}",
+    response_model=CourseConfigResponse,
+    tags=["Course Management"],
+    summary="Update course configuration"
+)
+async def update_course(course_id: str, update_data: CourseConfigUpdate):
+    """
+    Update an existing course configuration.
+
+    **Parameters:**
+    - `course_id`: The course identifier
+    - `update_data`: Fields to update (all optional)
+
+    **Returns:**
+    - Updated course configuration
+    """
+    try:
+        course_service = get_course_config_service()
+
+        # Filter out None values
+        update_dict = {k: v for k, v in update_data.model_dump().items() if v is not None}
+
+        if not update_dict:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No fields provided for update."
+            )
+
+        updated_course = course_service.update_course_config(course_id, update_dict)
+
+        if not updated_course:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Course '{course_id}' not found."
+            )
+
+        logger.info(f"✅ Course updated: {course_id}")
+        return CourseConfigResponse(**updated_course)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error updating course {course_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to update course configuration."
+        )
+
+
+@app.delete(
+    "/api/v1/courses/{course_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    tags=["Course Management"],
+    summary="Delete/deactivate course configuration"
+)
+async def delete_course(course_id: str, hard_delete: bool = False):
+    """
+    Delete or deactivate a course configuration.
+
+    **Parameters:**
+    - `course_id`: The course identifier
+    - `hard_delete`: If true, permanently delete; if false, just deactivate (default: false)
+
+    **Returns:**
+    - 204 No Content on success
+
+    **Note:**
+    - Soft delete (default) sets active=false, preserving the record
+    - Hard delete permanently removes the record from the database
+    - Soft delete is recommended to maintain data integrity
+    """
+    try:
+        course_service = get_course_config_service()
+        success = course_service.delete_course_config(course_id, soft_delete=not hard_delete)
+
+        if not success:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Course '{course_id}' not found."
+            )
+
+        action = "deactivated" if not hard_delete else "deleted"
+        logger.info(f"✅ Course {action}: {course_id}")
+        return None  # 204 No Content
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error deleting course {course_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to delete course configuration."
         )
 
 

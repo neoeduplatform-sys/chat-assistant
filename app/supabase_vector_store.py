@@ -8,7 +8,9 @@ en lugar de conexión directa a PostgreSQL, evitando problemas con IPv6.
 
 import logging
 import httpx
-from typing import List, Optional, Any
+from typing import Any, Dict, List, Optional
+
+from pydantic import ConfigDict, PrivateAttr
 
 from llama_index.core.vector_stores.types import (
     BasePydanticVectorStore,
@@ -17,7 +19,51 @@ from llama_index.core.vector_stores.types import (
 )
 from llama_index.core.schema import BaseNode, TextNode
 
+from app.rpc_filter import (
+    filter_empty,
+    filter_has_topic_id,
+    filter_no_topic_id,
+    is_retrieval_merge_with_topic_id_enabled,
+    is_topic_priority_retrieval_enabled,
+)
+
+
+def _advanced_retrieval_active() -> bool:
+    from app.chunk_diversity import is_chunk_diversity_enabled
+    from app.cohere_rerank import is_rerank_active
+
+    return is_rerank_active() or is_chunk_diversity_enabled()
+
+
+def _use_two_phase_retrieval() -> bool:
+    if is_topic_priority_retrieval_enabled():
+        return True
+    return is_retrieval_merge_with_topic_id_enabled() and _advanced_retrieval_active()
+
+
+def _two_phase_always_merge() -> bool:
+    """Fusionar fase curricular + global (no cortar solo en fase 1)."""
+    if is_topic_priority_retrieval_enabled():
+        from app.env_utils import env_bool
+
+        return env_bool("TOPIC_PRIORITY_ALWAYS_MERGE", default=False)
+    return True
+from app.source_labels import metadata_source_label
+
 logger = logging.getLogger(__name__)
+
+
+def _log_phase_chunks(tag: str, result) -> None:
+    nodes = result.nodes
+    sims = result.similarities or []
+    logger.info("[%s] %d chunks from Supabase:", tag, len(nodes))
+    for n, sim in zip(nodes, sims):
+        logger.info(
+            "  • db_id=%s | unique_content_id=%s | similarity=%.4f",
+            n.id_,
+            (n.metadata or {}).get("unique_content_id", "N/A"),
+            sim,
+        )
 
 
 class SupabaseVectorStore(BasePydanticVectorStore):
@@ -38,13 +84,10 @@ class SupabaseVectorStore(BasePydanticVectorStore):
     match_threshold: float = 0.5
     stores_text: bool = True  # Campo requerido por BasePydanticVectorStore
     is_embedding_query: bool = True  # Campo requerido por BasePydanticVectorStore
-    _client: Optional[httpx.Client] = None
-    _headers: Optional[dict] = None
 
-    class Config:
-        """Configuración de Pydantic."""
-        arbitrary_types_allowed = True  # Permitir tipos arbitrarios como httpx.Client
-        underscore_attrs_are_private = True  # Los atributos con _ son privados
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+    _client: Optional[httpx.Client] = PrivateAttr(default=None)
+    _headers: Optional[dict] = PrivateAttr(default=None)
 
     def __init__(
         self,
@@ -184,75 +227,237 @@ class SupabaseVectorStore(BasePydanticVectorStore):
             logger.error(f"Error al eliminar documento {ref_doc_id}: {e}")
             raise
 
-    def query(self, query: VectorStoreQuery, **kwargs: Any) -> VectorStoreQueryResult:
+    def delete_by_metadata(self, filter_key: str, filter_value: str) -> int:
         """
-        Realiza una búsqueda vectorial usando la función RPC de Supabase.
+        Elimina todos los documentos que coincidan con un filtro de metadata.
+
+        Esta función es útil para el patrón "upsert": eliminar todos los chunks
+        antiguos de un documento antes de insertar la nueva versión.
 
         Args:
-            query: Query con el embedding de búsqueda
+            filter_key: Clave en el campo metadata (ej: "unique_content_id")
+            filter_value: Valor a buscar en esa clave
 
         Returns:
-            Resultados de la búsqueda
+            Número de documentos eliminados
+
+        Example:
+            # Eliminar todos los chunks del documento con unique_content_id="doc123"
+            deleted_count = vector_store.delete_by_metadata("unique_content_id", "doc123")
         """
-        # Obtener embedding de la query
-        query_embedding = query.query_embedding
-        if not query_embedding:
-            raise ValueError("query_embedding es requerido para la búsqueda")
+        # Usar PostgREST syntax para query en JSONB
+        # metadata->>'key' = 'value'
+        # URL encoding: metadata->>key=eq.value
+        url = f"{self.supabase_url}/rest/v1/{self.table_name}?metadata->>{filter_key}=eq.{filter_value}"
 
-        # Parámetros para la función RPC
-        match_count = query.similarity_top_k or 3
+        try:
+            # Agregar header para obtener el número de filas afectadas
+            delete_headers = {
+                **self._headers,
+                "Prefer": "return=representation"
+            }
 
+            response = self._client.delete(url, headers=delete_headers)
+            response.raise_for_status()
+
+            # Contar cuántos documentos fueron eliminados
+            deleted_data = response.json()
+            deleted_count = len(deleted_data) if deleted_data else 0
+
+            logger.info(f"✅ {deleted_count} documento(s) eliminado(s) con {filter_key}={filter_value}")
+            return deleted_count
+
+        except httpx.HTTPStatusError as e:
+            logger.error(
+                f"Error HTTP al eliminar documentos con {filter_key}={filter_value}: "
+                f"{e.response.status_code} - {e.response.text}"
+            )
+            raise
+        except Exception as e:
+            logger.error(f"Error al eliminar documentos con {filter_key}={filter_value}: {e}")
+            raise
+
+    @staticmethod
+    def merge_query_results(
+        primary: VectorStoreQueryResult,
+        secondary: VectorStoreQueryResult,
+        max_count: int,
+    ) -> VectorStoreQueryResult:
+        """Une resultados priorizando ``primary`` (p. ej. chunks con topic_id)."""
+        seen: set[str] = set()
+        nodes: List[TextNode] = []
+        similarities: List[float] = []
+        ids: List[str] = []
+
+        for batch in (primary, secondary):
+            for node, sim, node_id in zip(batch.nodes, batch.similarities, batch.ids):
+                if node_id in seen:
+                    continue
+                seen.add(node_id)
+                nodes.append(node)
+                similarities.append(sim)
+                ids.append(node_id)
+                if len(nodes) >= max_count:
+                    break
+            if len(nodes) >= max_count:
+                break
+
+        return VectorStoreQueryResult(nodes=nodes, similarities=similarities, ids=ids)
+
+    def _rows_to_query_result(self, data: Optional[List[dict]]) -> VectorStoreQueryResult:
+        if not data:
+            return VectorStoreQueryResult(nodes=[], similarities=[], ids=[])
+
+        nodes: List[TextNode] = []
+        similarities: List[float] = []
+        ids: List[str] = []
+
+        for row in data:
+            node = TextNode(
+                text=row.get("content", ""),
+                metadata=row.get("metadata", {}),
+                id_=str(row.get("id", "")),
+            )
+            nodes.append(node)
+            similarities.append(float(row.get("similarity", 0.0)))
+            ids.append(str(row.get("id", "")))
+
+        return VectorStoreQueryResult(nodes=nodes, similarities=similarities, ids=ids)
+
+    def _call_rpc(
+        self,
+        query_embedding: List[float],
+        match_count: int,
+        metadata_filter: Dict[str, Any],
+    ) -> VectorStoreQueryResult:
         rpc_params = {
             "query_embedding": query_embedding,
             "match_count": match_count,
             "match_threshold": self.match_threshold,
-            "filter": {},  # Puedes agregar filtros personalizados aquí
+            "filter": metadata_filter,
         }
-
-        logger.debug(f"Ejecutando RPC: {self.rpc_function_name} con match_count={match_count}")
-
-        # URL para llamar a la función RPC
         url = f"{self.supabase_url}/rest/v1/rpc/{self.rpc_function_name}"
+        filter_label = metadata_filter if metadata_filter else "(sin filtro)"
+
+        logger.info(
+            "🔍 RPC %s | match_count=%s threshold=%s filter=%s",
+            self.rpc_function_name,
+            match_count,
+            self.match_threshold,
+            filter_label,
+        )
+
+        response = self._client.post(url, json=rpc_params)
+        response.raise_for_status()
+        data = response.json()
+        count = len(data) if data else 0
+        logger.info("📊 RPC Response: %d result(s)", count)
+        return self._rows_to_query_result(data)
+
+    def _query_single(
+        self,
+        query_embedding: List[float],
+        match_count: int,
+        metadata_filter: Optional[Dict[str, Any]] = None,
+    ) -> VectorStoreQueryResult:
+        filt = metadata_filter if metadata_filter is not None else filter_empty()
+        try:
+            result = self._call_rpc(query_embedding, match_count, filt)
+        except httpx.HTTPStatusError as e:
+            if filt and e.response.status_code in (400, 404):
+                logger.warning(
+                    "RPC rechazó filter=%s (%s). ¿Ejecutaste migrations/004_rpc_metadata_filter.sql "
+                    "y actualizaste la función match_*? Reintentando sin filtro.",
+                    filt,
+                    e.response.status_code,
+                )
+                result = self._call_rpc(query_embedding, match_count, filter_empty())
+            else:
+                logger.error(
+                    "Error HTTP en búsqueda RPC: %s - %s",
+                    e.response.status_code,
+                    e.response.text,
+                )
+                raise
+
+        if result.nodes:
+            first_label = metadata_source_label(result.nodes[0].metadata) or "N/A"
+            logger.info(
+                "   Primera fuente: %s (similarity: %.3f)",
+                first_label,
+                result.similarities[0],
+            )
+        return result
+
+    def _query_topic_priority_two_phase(
+        self,
+        query_embedding: List[float],
+        match_count: int,
+    ) -> VectorStoreQueryResult:
+        phase1 = self._query_single(query_embedding, match_count, filter_has_topic_id())
+        n1 = len(phase1.nodes)
+        logger.info(
+            "📚 Fase 1 (has_topic_id): %d/%d resultados",
+            n1,
+            match_count,
+        )
+        _log_phase_chunks("RAG_DB_RESULTS_PHASE1", phase1)
+
+        if n1 > 0:
+            return phase1
+
+        logger.info("ℹ️  Fase 1 vacía; ejecutando fallback sin topic_id")
+        phase2 = self._query_single(query_embedding, match_count, filter_no_topic_id())
+        logger.info(
+            "📚 Fase 2 (no_topic_id, fallback): %d resultados",
+            len(phase2.nodes),
+        )
+        return phase2
+
+    def query(self, query: VectorStoreQuery, **kwargs: Any) -> VectorStoreQueryResult:
+        """
+        Realiza una búsqueda vectorial usando la función RPC de Supabase.
+
+        Con diversidad/rerank y ``RETRIEVAL_MERGE_WITH_TOPIC_ID=true`` (default):
+        fusiona fase ``has_topic_id`` + búsqueda global.
+        """
+        query_embedding = query.query_embedding
+        if not query_embedding:
+            raise ValueError("query_embedding es requerido para la búsqueda")
+
+        match_count = query.similarity_top_k or 3
 
         try:
-            # Llamar a la función RPC de Supabase usando httpx
-            response = self._client.post(url, json=rpc_params)
-            response.raise_for_status()
+            if _use_two_phase_retrieval():
+                result = self._query_topic_priority_two_phase(query_embedding, match_count)
+            else:
+                result = self._query_single(query_embedding, match_count, filter_empty())
 
-            data = response.json()
-
-            if not data:
-                logger.warning("No se encontraron resultados para la búsqueda")
-                return VectorStoreQueryResult(nodes=[], similarities=[], ids=[])
-
-            # Procesar resultados
-            nodes = []
-            similarities = []
-            ids = []
-
-            for row in data:
-                # Crear nodo a partir de los datos
-                node = TextNode(
-                    text=row.get("content", ""),
-                    metadata=row.get("metadata", {}),
-                    id_=str(row.get("id", "")),
+            if not result.nodes:
+                logger.warning("⚠️  No se encontraron resultados para la búsqueda")
+            elif len(result.nodes) < match_count:
+                logger.info(
+                    "ℹ️  RPC devolvió %d/%d (umbral %.2f puede limitar candidatos)",
+                    len(result.nodes),
+                    match_count,
+                    self.match_threshold,
                 )
 
-                nodes.append(node)
-                similarities.append(float(row.get("similarity", 0.0)))
-                ids.append(str(row.get("id", "")))
+            logger.info("✅ Búsqueda completada: %d resultado(s)", len(result.nodes))
 
-            logger.info(f"✅ Búsqueda completada: {len(nodes)} resultados encontrados")
+            logger.info("[RAG_DB_RESULTS] %d initial chunks from Supabase:", len(result.nodes))
+            for n, sim in zip(result.nodes, result.similarities or []):
+                logger.info(
+                    "  • db_id=%s | unique_content_id=%s | similarity=%.4f",
+                    n.id_,
+                    (n.metadata or {}).get("unique_content_id", "N/A"),
+                    sim,
+                )
 
-            return VectorStoreQueryResult(
-                nodes=nodes,
-                similarities=similarities,
-                ids=ids,
-            )
+            return result
 
-        except httpx.HTTPStatusError as e:
-            logger.error(f"Error HTTP en búsqueda RPC: {e.response.status_code} - {e.response.text}")
+        except httpx.HTTPStatusError:
             raise
         except Exception as e:
-            logger.error(f"Error en búsqueda RPC: {e}")
+            logger.error("Error en búsqueda RPC: %s", e)
             raise

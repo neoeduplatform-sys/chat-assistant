@@ -5,16 +5,19 @@
 # Framework de API
 fastapi==0.115.0
 uvicorn[standard]==0.32.0
-pydantic==2.9.2
-pydantic-settings==2.6.0
+# llama-index-workflows (via llama-index-core 0.13+) requires pydantic>=2.11.5
+pydantic>=2.11.5,<3
+pydantic-settings>=2.6.0,<3
 
 # Framework de orquestación RAG
-llama-index>=0.12.36,<0.13.0
-llama-index-core>=0.12.36,<0.13.0
+# 0.13.x: requerido por llama-index-postprocessor-cohere-rerank (core >=0.13).
+# Integraciones Google GenAI 0.3.x alinean core <0.14 con ese mismo rango.
+llama-index>=0.13.0,<0.14
+llama-index-core>=0.13.0,<0.14
 
 # Integraciones con Google Gemini
-llama-index-llms-google-genai==0.2.0
-llama-index-embeddings-google-genai==0.2.0
+llama-index-llms-google-genai>=0.3.0,<0.4
+llama-index-embeddings-google-genai>=0.3.0,<0.4
 
 # HTTP client para conectarse a Supabase API REST
 # httpx ya está incluido como dependencia de llama-index-core y google-genai
@@ -32,3 +35,9 @@ aiofiles==24.1.0
 
 # Logging y monitoreo
 python-json-logger==3.2.1
+
+# Cohere Rerank (optional, enable with COHERE_RERANK_ENABLED=true)
+llama-index-postprocessor-cohere-rerank>=0.5.0,<0.7
+
+# Autenticación JWT para el widget embebido en Moodle
+PyJWT==2.10.1

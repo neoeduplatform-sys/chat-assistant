@@ -166,13 +166,28 @@
     <!-- Configuración del widget -->
     <script>
         // Configuración personalizada del chatbot (opcional)
-        window.CHATBOT_API_URL = 'http://localhost:8080/api/chat';
+        // Misma origen = sin CORS al servir desde FastAPI (localhost o dominio propio).
+        // Para probar contra otro host (p. ej. producción), usa la URL absoluta y
+        // configura CORS en ese servidor para tu origen.
+        window.CHATBOT_API_URL = '/api/chat';
         window.CHATBOT_TITLE = 'Asistente del Curso';
         window.CHATBOT_SUBTITLE = 'Pregúntame sobre el contenido';
         window.CHATBOT_PLACEHOLDER = 'Escribe tu pregunta aquí...';
         window.CHATBOT_PRIMARY_COLOR = '#4F46E5';
         window.CHATBOT_ACCENT_COLOR = '#6366F1';
-        window.CHATBOT_COURSE_ID = 'ec1530_mantenimiento_electromecanico';
+        window.CHATBOT_COURSE_ID = 'default';
+
+        (function () {
+            try {
+                var key = 'chatbot_demo_user_id';
+                var uid = localStorage.getItem(key);
+                if (!uid) {
+                    uid = 'demo-' + Math.random().toString(36).slice(2, 10) + '-' + Date.now();
+                    localStorage.setItem(key, uid);
+                }
+                window.CHATBOT_USER_ID = uid;
+            } catch (e) { /* storage disabled: memory simply won't persist */ }
+        })();
     </script>
 
     <!-- Widget del chatbot -->
@@ -261,7 +276,8 @@
             <h3>Prueba el Chatbot Ahora</h3>
             <p>
                 Haz clic en el ícono de chat en la esquina inferior derecha
-                y empieza a hacer preguntas sobre el curso. ¡Es fácil y rápido!
+                para abrir el asistente; ciérralo con la X del panel. Tras recargar la página,
+                el panel puede volver a abrirse solo si lo dejaste abierto.
             </p>
         </div>
 
